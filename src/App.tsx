@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Component } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Shield, 
@@ -109,11 +109,17 @@ const Select = ({ label, options, value, onChange }: { label: string; options: s
 );
 
 // --- Error Boundary ---
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+class ErrorBoundary extends Component<{ children: React.ReactNode }, any> {
+  state = { hasError: false, error: null };
 
   static getDerivedStateFromError(error: any) {
     return { hasError: true, error };
@@ -124,7 +130,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 
   render() {
-    if (this.state.hasError) {
+    if ((this as any).state.hasError) {
       return (
         <div className="min-h-screen bg-[#0f0a1f] text-white flex items-center justify-center p-6 text-center">
           <div className="max-w-md space-y-4">
@@ -132,16 +138,16 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
             <h1 className="text-2xl font-bold">Something went wrong</h1>
             <p className="text-slate-400 text-sm">The application crashed due to a runtime error. Please try refreshing the page.</p>
             <pre className="bg-black/50 p-4 rounded-xl text-left text-[10px] overflow-auto max-h-40 text-rose-300 font-mono">
-              {this.state.error?.message || "Unknown error"}
+              {(this as any).state.error?.message || "Unknown error"}
             </pre>
-            <Button onClick={() => window.location.reload()} className="w-full">
+            <Button onClick={() => window.location.reload()} className="w-full text-white">
               Refresh Page
             </Button>
           </div>
         </div>
       );
     }
-    return this.props.children;
+    return (this as any).props.children;
   }
 }
 
@@ -357,6 +363,13 @@ function App() {
     setIsLoading(true);
     console.log("Attempting login with token:", tokenToUse.substring(0, 5) + "...");
     
+    // Immediate fallback if we are in static mode
+    if (isStaticMode) {
+      console.log("Static mode active, using immediate fallback for login");
+      await handleFallbackLogin(tokenToUse);
+      return;
+    }
+
     try {
       // 1. Try the API first (Full-stack mode)
       const response = await axios.post("/api/auth/validate-token", { 
@@ -374,6 +387,7 @@ function App() {
         setIsAdmin(role === "admin");
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted!");
+        setIsLoading(false);
         return;
       }
     } catch (err: any) {
@@ -390,6 +404,10 @@ function App() {
     }
 
     // 2. Client-side Fallback (Static mode - e.g. Netlify)
+    await handleFallbackLogin(tokenToUse);
+  };
+
+  const handleFallbackLogin = async (tokenToUse: string) => {
     try {
       // Hardcoded Admin Token Fallback
       if (tokenToUse === "adminwaleed786") {
@@ -405,8 +423,10 @@ function App() {
         setUser(adminData);
         setIsAuth(true);
         setIsAdmin(true);
+        setToken(tokenToUse); // Ensure token state is updated
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted (Master Admin)!");
+        setIsLoading(false);
         return;
       }
 
@@ -427,8 +447,10 @@ function App() {
         setUser(adminToken);
         setIsAuth(true);
         setIsAdmin(true);
+        setToken(tokenToUse); // Ensure token state is updated
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted (Admin)!");
+        setIsLoading(false);
         return;
       }
 
@@ -462,6 +484,7 @@ function App() {
       setUser(userToken);
       setIsAuth(true);
       setIsAdmin(false);
+      setToken(tokenToUse); // Ensure token state is updated
       localStorage.setItem("md_token", tokenToUse);
       toast.success("Access Granted!");
     } catch (err: any) {
@@ -498,6 +521,14 @@ function App() {
 
     setIsGenerating(true);
     setSignal(null);
+
+    // Immediate fallback if we are in static mode
+    if (isStaticMode) {
+      console.log("Static mode active, using immediate fallback for signal generation");
+      await handleFallbackSignal();
+      return;
+    }
+
     try {
       // 1. Try API first
       const response = await axios.post("/api/signals/generate", { 
@@ -533,34 +564,42 @@ function App() {
         return;
       }
 
-      // 2. Client-side Fallback (Mock Signal for static hosts)
-      toast.info("Running in Static Mode (No Backend). Generating simulated signal.");
-      
-      // Simulate delay
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const types: ("CALL" | "PUT" | "BUY" | "SELL")[] = broker === "quotex" ? ["CALL", "PUT"] : ["BUY", "SELL"];
-      const type = types[Math.floor(Math.random() * types.length)];
-      const entry = (Math.random() * 100 + 1).toFixed(5);
-      
-      const mockSignal: Signal = {
-        type,
-        entry,
-        tp: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? 0.001 : -0.001)).toFixed(5),
-        sl: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? -0.0005 : 0.0005)).toFixed(5),
-        duration: broker === "quotex" ? timeframe : "1-5m",
-        confidence: Math.random() > 0.5 ? "High" : "Medium",
-        confirmationZone: "Strong Support/Resistance",
-        recommendations: ["Wait for candle confirmation", "Check RSI for divergence"],
-        timestamp: new Date().toISOString(),
-        pair
-      };
-
-      setSignal(mockSignal);
-      toast.success("Simulated Signal Generated!");
+      // 2. Client-side Fallback (Static mode - e.g. Netlify)
+      await handleFallbackSignal();
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const handleFallbackSignal = async () => {
+    toast.info("Running in Static Mode (No Backend). Generating simulated signal.");
+    
+    // Simulate delay
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const types: ("CALL" | "PUT" | "BUY" | "SELL")[] = broker === "quotex" ? ["CALL", "PUT"] : ["BUY", "SELL"];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const entry = (Math.random() * 100 + 1).toFixed(5);
+    
+    const mockSignal: Signal = {
+      type,
+      entry,
+      tp: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? 0.001 : -0.001)).toFixed(5),
+      sl: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? -0.0005 : 0.0005)).toFixed(5),
+      duration: broker === "quotex" ? timeframe : "1-5m",
+      confidence: Math.random() > 0.5 ? "High" : "Medium",
+      confirmationZone: (parseFloat(entry) + (Math.random() * 0.0002 - 0.0001)).toFixed(5),
+      recommendations: [
+        "Wait for confirmation candle",
+        "Check RSI for overbought/oversold",
+        "Use 1% risk per trade"
+      ],
+      timestamp: new Date().toISOString(),
+      pair: pair.toUpperCase()
+    };
+
+    setSignal(mockSignal);
+    toast.success("Simulated Signal Generated!");
   };
 
   const fetchAllTokens = async () => {
@@ -860,6 +899,20 @@ function App() {
                   I am not a financial advisor. Risk management is essential.
                 </p>
               </div>
+
+              {/* Static Mode Info */}
+              {isStaticMode && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-500">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span className="text-xs font-bold uppercase tracking-wider">Static Mode Active</span>
+                  </div>
+                  <p className="text-[10px] text-amber-500/80 leading-relaxed">
+                    The backend API is currently unreachable (common on Netlify). 
+                    The app will use <b>Simulated Signals</b> and direct database connection.
+                  </p>
+                </div>
+              )}
 
               {/* Logo */}
               <div className="flex justify-center">
