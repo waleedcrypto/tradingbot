@@ -153,6 +153,18 @@ export default function App() {
   const [showRestrictionModal, setShowRestrictionModal] = useState(false);
   const [restrictionRemaining, setRestrictionRemaining] = useState("");
 
+  useEffect(() => {
+    console.log("App Initialized");
+    console.log("Supabase Status:", supabase ? "Connected" : "Missing VITE_SUPABASE_URL/KEY");
+    console.log("Gemini Key Status:", (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) ? "Present" : "Missing GEMINI_API_KEY");
+
+    const savedToken = localStorage.getItem("md_token");
+    if (savedToken) {
+      setToken(savedToken);
+      handleLogin(savedToken);
+    }
+  }, []);
+
   // Dashboard State
   const [broker, setBroker] = useState("");
   const [pair, setPair] = useState("");
@@ -161,14 +173,6 @@ export default function App() {
   const [signal, setSignal] = useState<Signal | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [countdown, setCountdown] = useState<string>("");
-
-  useEffect(() => {
-    const savedToken = localStorage.getItem("md_token");
-    if (savedToken) {
-      setToken(savedToken);
-      handleLogin(savedToken);
-    }
-  }, []);
 
   useEffect(() => {
     if (user && isAuth) {
@@ -403,7 +407,13 @@ export default function App() {
       }
 
       // Use Gemini to analyze data and generate signal
-      const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+      const apiKey = (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || "";
+      if (!apiKey) {
+        toast.error("Gemini API Key is missing. Please check Netlify Environment Variables.");
+        setIsGenerating(false);
+        return;
+      }
+      const genAI = new GoogleGenAI({ apiKey });
       
       const prompt = `
         You are a professional Forex and Crypto trader with 20 years of experience.
@@ -436,7 +446,7 @@ export default function App() {
       `;
 
       const result = await genAI.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-3-flash-preview",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           responseMimeType: "application/json",
