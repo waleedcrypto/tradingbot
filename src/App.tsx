@@ -20,7 +20,6 @@ import axios from "axios";
 import { supabase } from "./lib/supabase";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { GoogleGenAI, Type } from "@google/genai";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -154,10 +153,6 @@ export default function App() {
   const [restrictionRemaining, setRestrictionRemaining] = useState("");
 
   useEffect(() => {
-    console.log("App Initialized");
-    console.log("Supabase Status:", supabase ? "Connected" : "Missing VITE_SUPABASE_URL/KEY");
-    console.log("Gemini Key Status:", (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) ? "Present" : "Missing GEMINI_API_KEY");
-
     const savedToken = localStorage.getItem("md_token");
     if (savedToken) {
       setToken(savedToken);
@@ -344,161 +339,41 @@ export default function App() {
     setIsGenerating(true);
     setSignal(null);
     try {
-      let marketData: any = null;
-      let symbol = "";
-
-      if (broker === "binance") {
-        symbol = pair.replace("/", "").toUpperCase();
-        const response = await axios.get(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=24`);
-        marketData = response.data.map((k: any) => ({
-          time: new Date(k[0]).toISOString(),
-          open: k[1],
-          high: k[2],
-          low: k[3],
-          close: k[4],
-          volume: k[5]
-        }));
-      } else if (broker === "forex" || broker === "quotex") {
-        symbol = pair.split(" ")[0];
-        const apiKey = import.meta.env.VITE_TWELVE_DATA_API_KEY || "5df5b89ecdfe4649a365c0f3ba8706ad";
-        
-        try {
-          const response = await axios.get(`https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1h&outputsize=24&apikey=${apiKey}`);
-          if (response.data && response.data.values) {
-            marketData = response.data.values;
-          } else {
-            // Fallback to quote if time_series fails
-            const quoteRes = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${apiKey}`);
-            if (quoteRes.data && quoteRes.data.close) {
-              marketData = [quoteRes.data];
-            }
-          }
-        } catch (e) {
-          console.error("Twelve Data Error:", e);
-        }
-
-        // Fallback to Yahoo Finance via AllOrigins if Twelve Data fails
-        if (!marketData) {
-          try {
-            const cleanSymbol = symbol.replace("/", "");
-            const yahooSymbol = symbol.includes("/") ? `${cleanSymbol}=X` : `${cleanSymbol}=F`;
-            const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1h&range=1d`)}`);
-            const data = JSON.parse(res.data.contents);
-            if (data.chart && data.chart.result) {
-              const result = data.chart.result[0];
-              const quotes = result.indicators.quote[0];
-              marketData = result.timestamp.map((t: number, i: number) => ({
-                datetime: new Date(t * 1000).toISOString(),
-                open: quotes.open[i],
-                high: quotes.high[i],
-                low: quotes.low[i],
-                close: quotes.close[i],
-                volume: quotes.volume[i]
-              })).reverse();
-            }
-          } catch (e) {
-            console.error("Yahoo Fallback Error:", e);
-          }
-        }
-      }
-
-      if (!marketData || marketData.length === 0) {
-        throw new Error("Could not fetch live market data. Please try again later.");
-      }
-
-      // Use Gemini to analyze data and generate signal
-      const apiKey = (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || "";
-      if (!apiKey) {
-        toast.error("Gemini API Key is missing. Please check Netlify Environment Variables.");
-        setIsGenerating(false);
-        return;
-      }
-      const genAI = new GoogleGenAI({ apiKey });
-      
-      const prompt = `
-        You are a professional Forex and Crypto trader with 20 years of experience.
-        Analyze the following live market data for ${pair} on ${broker} broker.
-        Current Time: ${new Date().toISOString()}
-        
-        Market Data (Last 24 hours OHLC):
-        ${JSON.stringify(marketData.slice(0, 10), null, 2)}
-        
-        Generate a high-probability trading signal.
-        - For Binance/Forex: Use type "BUY" or "SELL".
-        - For Quotex: Use type "CALL" or "PUT" (Binary Options).
-        - Provide Entry Price (current market price), Take Profit (TP), and Stop Loss (SL).
-        - TP and SL should be realistic based on current volatility.
-        - Confidence level (High, Medium, Low).
-        - Confirmation Zone (Price range to look for entry).
-        - 3 professional recommendations/scenarios.
-        
-        Return ONLY a JSON object matching this schema:
-        {
-          "type": "BUY" | "SELL" | "CALL" | "PUT",
-          "entry": string,
-          "tp": string (optional for Quotex),
-          "sl": string (optional for Quotex),
-          "duration": string (only for Quotex, e.g. "1m", "5m"),
-          "confidence": "High" | "Medium" | "Low",
-          "confirmationZone": string,
-          "recommendations": string[]
-        }
-      `;
-
-      const result = await genAI.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              type: { type: Type.STRING, enum: ["BUY", "SELL", "CALL", "PUT"] },
-              entry: { type: Type.STRING },
-              tp: { type: Type.STRING },
-              sl: { type: Type.STRING },
-              duration: { type: Type.STRING },
-              confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
-              confirmationZone: { type: Type.STRING },
-              recommendations: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
-              }
-            },
-            required: ["type", "entry", "confidence", "confirmationZone", "recommendations"]
-          }
-        }
+      const response = await axios.post("/api/signals/generate", {
+        broker,
+        pair,
+        timeframe
       });
 
-      const signalJson = JSON.parse(result.text || "{}");
-      
-      const signalData: Signal = {
-        ...signalJson,
-        timestamp: new Date().toISOString(),
-        pair
-      };
+      if (response.data) {
+        const signalData: Signal = {
+          ...response.data,
+          timestamp: new Date().toISOString(),
+          pair
+        };
 
-      if (broker === "quotex") {
-        signalData.duration = timeframe || "1m";
-        // Set Restriction
-        const value = parseInt(timeframe);
-        let durationMs = 60000;
-        if (timeframe.endsWith("s")) durationMs = value * 1000;
-        else if (timeframe.endsWith("m")) durationMs = value * 60 * 1000;
-        else if (timeframe.endsWith("h")) durationMs = value * 60 * 60 * 1000;
-        else if (timeframe.endsWith("d")) durationMs = value * 24 * 60 * 60 * 1000;
+        if (broker === "quotex") {
+          signalData.duration = timeframe || "1m";
+          // Set Restriction
+          const value = parseInt(timeframe);
+          let durationMs = 60000;
+          if (timeframe.endsWith("s")) durationMs = value * 1000;
+          else if (timeframe.endsWith("m")) durationMs = value * 60 * 1000;
+          else if (timeframe.endsWith("h")) durationMs = value * 60 * 60 * 1000;
+          else if (timeframe.endsWith("d")) durationMs = value * 24 * 60 * 60 * 1000;
 
-        setRestrictions(prev => ({
-          ...prev,
-          [pair]: Date.now() + durationMs
-        }));
+          setRestrictions(prev => ({
+            ...prev,
+            [pair]: Date.now() + durationMs
+          }));
+        }
+
+        setSignal(signalData);
+        toast.success("Signal Generated Successfully!");
       }
-
-      setSignal(signalData);
-      toast.success("Signal Generated with AI Analysis!");
     } catch (err: any) {
       console.error("Signal Generation Error:", err);
-      toast.error(err.message || "Failed to generate signal");
+      toast.error(err.response?.data?.error || "Failed to generate signal. Please try again.");
     } finally {
       setIsGenerating(false);
     }
