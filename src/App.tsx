@@ -243,14 +243,17 @@ export default function App() {
   const handleLogin = async (tokenToUse: string) => {
     if (!tokenToUse) return;
     setIsLoading(true);
+    console.log("Attempting login with token:", tokenToUse.substring(0, 5) + "...");
+    
     try {
-      // Use the API endpoint instead of direct Supabase call to handle session logic
+      // 1. Try the API first (Full-stack mode)
       const response = await axios.post("/api/auth/validate-token", { 
         token: tokenToUse,
         sessionId,
-        location: Intl.DateTimeFormat().resolvedOptions().timeZone // Simple location proxy
+        location: Intl.DateTimeFormat().resolvedOptions().timeZone
       });
 
+      console.log("Login response (API):", response.data);
       const { valid, role, token: tokenData } = response.data;
 
       if (valid) {
@@ -259,16 +262,99 @@ export default function App() {
         setIsAdmin(role === "admin");
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted!");
+        return;
       }
     } catch (err: any) {
-      const errorMsg = err.response?.data?.error || "Login failed. Please try again.";
-      toast.error(errorMsg);
+      console.warn("API Login failed, trying client-side fallback:", err.message);
       
-      if (err.response?.data?.code === "TOKEN_EXPIRED") {
-        setIsExpiredModalOpen(true);
+      // If it's a specific error from the server (like expired or conflict), don't fallback
+      if (err.response && err.response.status !== 404 && err.response.status !== 502) {
+        const errorMsg = err.response?.data?.error || "Login failed. Please try again.";
+        toast.error(errorMsg);
+        if (err.response?.data?.code === "TOKEN_EXPIRED") setIsExpiredModalOpen(true);
+        setIsLoading(false);
+        return;
       }
-      
-      localStorage.removeItem("md_token");
+    }
+
+    // 2. Client-side Fallback (Static mode - e.g. Netlify)
+    try {
+      // Hardcoded Admin Token Fallback
+      if (tokenToUse === "adminwaleed786") {
+        const adminData: Token = { 
+          id: "master-admin", 
+          token: "adminwaleed786", 
+          role: "admin", 
+          is_active: true,
+          label: "Master Admin",
+          expiry_date: "2099-12-31",
+          created_at: new Date().toISOString()
+        };
+        setUser(adminData);
+        setIsAuth(true);
+        setIsAdmin(true);
+        localStorage.setItem("md_token", tokenToUse);
+        toast.success("Access Granted (Master Admin)!");
+        return;
+      }
+
+      if (!supabase) {
+        toast.error("Database connection not configured. Please check your environment variables.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Check admin tokens
+      const { data: adminToken } = await supabase
+        .from("admin_tokens")
+        .select("*")
+        .eq("token", tokenToUse)
+        .maybeSingle();
+
+      if (adminToken) {
+        setUser(adminToken);
+        setIsAuth(true);
+        setIsAdmin(true);
+        localStorage.setItem("md_token", tokenToUse);
+        toast.success("Access Granted (Admin)!");
+        return;
+      }
+
+      // Check user tokens
+      const { data: userToken } = await supabase
+        .from("users_tokens")
+        .select("*")
+        .eq("token", tokenToUse)
+        .maybeSingle();
+
+      if (!userToken) {
+        toast.error("Invalid token. Please check your token and try again.");
+        setIsLoading(false);
+        return;
+      }
+
+      if (!userToken.is_active) {
+        toast.error("Token is inactive");
+        setIsLoading(false);
+        return;
+      }
+
+      const now = new Date();
+      const expiryDate = new Date(userToken.expiry_date);
+      if (expiryDate < now) {
+        setIsExpiredModalOpen(true);
+        setIsLoading(false);
+        return;
+      }
+
+      setUser(userToken);
+      setIsAuth(true);
+      setIsAdmin(false);
+      localStorage.setItem("md_token", tokenToUse);
+      toast.success("Access Granted!");
+    } catch (err: any) {
+      console.error("Fallback Login error:", err);
+      toast.error("Login failed. Please check your internet connection and database configuration.");
     } finally {
       setIsLoading(false);
     }
@@ -301,6 +387,7 @@ export default function App() {
     setIsGenerating(true);
     setSignal(null);
     try {
+      // 1. Try API first
       const response = await axios.post("/api/signals/generate", { 
         broker, 
         pair, 
@@ -312,22 +399,53 @@ export default function App() {
       setSignal(signalData);
       toast.success("Signal Generated!");
     } catch (err: any) {
-      const errorMsg = err.response?.data?.error || "Failed to generate signal";
-      toast.error(errorMsg);
+      console.warn("API Signal generation failed, trying client-side fallback:", err.message);
       
-      // If it's a Quotex restriction with remaining time, set the local restriction state
-      if (err.response?.data?.remainingMs) {
-        setRestrictions(prev => ({
-          ...prev,
-          [pair]: Date.now() + err.response.data.remainingMs
-        }));
-        setShowRestrictionModal(true);
+      // If it's a specific business logic error from the server, don't fallback
+      if (err.response && err.response.status !== 404 && err.response.status !== 502) {
+        const errorMsg = err.response?.data?.error || "Failed to generate signal";
+        toast.error(errorMsg);
+        
+        if (err.response?.data?.remainingMs) {
+          setRestrictions(prev => ({
+            ...prev,
+            [pair]: Date.now() + err.response.data.remainingMs
+          }));
+          setShowRestrictionModal(true);
+        }
+        
+        if (err.response?.data?.activeSignal) {
+          setSignal(err.response.data.activeSignal);
+        }
+        setIsGenerating(false);
+        return;
       }
+
+      // 2. Client-side Fallback (Mock Signal for static hosts)
+      toast.info("Running in Static Mode (No Backend). Generating simulated signal.");
       
-      // If there's an active signal, show it
-      if (err.response?.data?.activeSignal) {
-        setSignal(err.response.data.activeSignal);
-      }
+      // Simulate delay
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const types: ("CALL" | "PUT" | "BUY" | "SELL")[] = broker === "quotex" ? ["CALL", "PUT"] : ["BUY", "SELL"];
+      const type = types[Math.floor(Math.random() * types.length)];
+      const entry = (Math.random() * 100 + 1).toFixed(5);
+      
+      const mockSignal: Signal = {
+        type,
+        entry,
+        tp: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? 0.001 : -0.001)).toFixed(5),
+        sl: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? -0.0005 : 0.0005)).toFixed(5),
+        duration: broker === "quotex" ? timeframe : "1-5m",
+        confidence: Math.random() > 0.5 ? "High" : "Medium",
+        confirmationZone: "Strong Support/Resistance",
+        recommendations: ["Wait for candle confirmation", "Check RSI for divergence"],
+        timestamp: new Date().toISOString(),
+        pair
+      };
+
+      setSignal(mockSignal);
+      toast.success("Simulated Signal Generated!");
     } finally {
       setIsGenerating(false);
     }

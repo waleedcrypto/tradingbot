@@ -16,6 +16,11 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Health Check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
+});
+
 // Supabase Setup
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
@@ -24,7 +29,29 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.warn("Supabase credentials missing. Auth will only work with hardcoded admin token.");
 }
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+let supabase: any;
+try {
+  if (supabaseUrl && supabaseAnonKey) {
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+  } else {
+    console.error("Supabase credentials missing. Supabase client not initialized.");
+    supabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: null, error: new Error("Supabase not configured") }),
+            single: async () => ({ data: null, error: new Error("Supabase not configured") })
+          })
+        }),
+        update: () => ({
+          eq: async () => ({ error: new Error("Supabase not configured") })
+        })
+      })
+    };
+  }
+} catch (e) {
+  console.error("Failed to initialize Supabase:", e);
+}
 
 // Binance API Setup
 const BINANCE_API_KEY = process.env.BINANCE_API_KEY;
@@ -98,6 +125,7 @@ const getYahooSymbol = (pair: string) => {
 // Token Validation
 app.post("/api/auth/validate-token", async (req, res) => {
   const { token, sessionId, location } = req.body;
+  console.log(`[Auth] Validation request for token: ${token?.substring(0, 5)}... Session: ${sessionId}`);
 
   if (!token) {
     return res.status(400).json({ error: "Token is required" });
@@ -106,6 +134,7 @@ app.post("/api/auth/validate-token", async (req, res) => {
   try {
     // Hardcoded Admin Token Fallback
     if (token === "adminwaleed786") {
+      console.log("[Auth] Hardcoded admin token accepted");
       return res.json({ 
         valid: true, 
         role: "admin", 
@@ -117,6 +146,11 @@ app.post("/api/auth/validate-token", async (req, res) => {
           label: "Master Admin"
         } 
       });
+    }
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.warn("[Auth] Supabase not configured, only hardcoded admin token will work");
+      return res.status(401).json({ error: "Database not configured. Please use the master admin token." });
     }
 
     // Check if it's an admin token first
