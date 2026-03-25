@@ -152,6 +152,15 @@ export default function App() {
   const [showRestrictionModal, setShowRestrictionModal] = useState(false);
   const [restrictionRemaining, setRestrictionRemaining] = useState("");
 
+  const [sessionId] = useState(() => {
+    let id = localStorage.getItem("md_session_id");
+    if (!id) {
+      id = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem("md_session_id", id);
+    }
+    return id;
+  });
+
   // Dashboard State
   const [broker, setBroker] = useState("");
   const [pair, setPair] = useState("");
@@ -209,27 +218,14 @@ export default function App() {
 
   const fetchPairs = async () => {
     try {
-      if (broker === "binance") {
-        const response = await axios.get("https://fapi.binance.com/fapi/v1/exchangeInfo");
-        const symbols = response.data.symbols
-          .filter((s: any) => s.status === "TRADING" && s.quoteAsset === "USDT")
-          .map((s: any) => s.symbol);
-        setAvailablePairs(symbols);
-      } else if (broker === "forex") {
-        setAvailablePairs([
-          "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
-          "EUR/GBP", "EUR/JPY", "GBP/JPY", "EUR/AUD", "EUR/CAD", "AUD/JPY", "CAD/JPY",
-          "AUD/NZD", "EUR/NZD", "GBP/AUD", "GBP/CAD", "GBP/CHF", "GBP/NZD", "NZD/JPY",
-          "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD"
-        ]);
-      } else if (broker === "quotex") {
-        setAvailablePairs([
-          "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
-          "USD/CHF (OTC)", "NZD/USD (OTC)", "GBP/JPY (OTC)", "EUR/JPY (OTC)", "AUD/USD (OTC)",
-          "USD/CAD (OTC)", "EUR/CHF (OTC)", "CAD/CHF (OTC)", "CHF/JPY (OTC)", "AUD/NZD (OTC)",
-          "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
-          "Apple (OTC)", "Facebook (OTC)", "Google (OTC)", "Netflix (OTC)", "Tesla (OTC)"
-        ]);
+      let endpoint = "";
+      if (broker === "binance") endpoint = "/api/market/binance-pairs";
+      else if (broker === "forex") endpoint = "/api/market/forex-pairs";
+      else if (broker === "quotex") endpoint = "/api/market/quotex-pairs";
+
+      if (endpoint) {
+        const response = await axios.get(endpoint);
+        setAvailablePairs(response.data);
       }
     } catch (err) {
       toast.error("Failed to fetch market pairs");
@@ -248,70 +244,42 @@ export default function App() {
     if (!tokenToUse) return;
     setIsLoading(true);
     try {
-      // Hardcoded Admin Token Fallback
-      if (tokenToUse === "adminwaleed786") {
-        const adminData = { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true, created_at: new Date().toISOString(), expiry_date: new Date(Date.now() + 365 * 86400000).toISOString() };
-        setUser(adminData as any);
+      // Use the API endpoint instead of direct Supabase call to handle session logic
+      const response = await axios.post("/api/auth/validate-token", { 
+        token: tokenToUse,
+        sessionId,
+        location: Intl.DateTimeFormat().resolvedOptions().timeZone // Simple location proxy
+      });
+
+      const { valid, role, token: tokenData } = response.data;
+
+      if (valid) {
+        setUser(tokenData);
         setIsAuth(true);
-        setIsAdmin(true);
+        setIsAdmin(role === "admin");
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted!");
-        setIsLoading(false);
-        return;
       }
-
-      // Check Supabase for user tokens
-      if (!supabase) {
-        toast.error("Database connection not configured. Please check environment variables.");
-        setIsLoading(false);
-        return;
-      }
-
-      const { data: userToken, error: userError } = await supabase
-        .from("users_tokens")
-        .select("*")
-        .eq("token", tokenToUse)
-        .single();
-
-      if (userError || !userToken) {
-        toast.error("Invalid Token");
-        localStorage.removeItem("md_token");
-        setIsLoading(false);
-        return;
-      }
-
-      // Check expiry
-      const now = new Date();
-      const expiryDate = new Date(userToken.expiry_date);
-
-      if (expiryDate < now) {
-        setIsExpiredModalOpen(true);
-        localStorage.removeItem("md_token");
-        setIsLoading(false);
-        return;
-      }
-
-      if (!userToken.is_active) {
-        toast.error("Token is inactive");
-        localStorage.removeItem("md_token");
-        setIsLoading(false);
-        return;
-      }
-
-      setUser(userToken);
-      setIsAuth(true);
-      setIsAdmin(false);
-      localStorage.setItem("md_token", tokenToUse);
-      toast.success("Access Granted!");
     } catch (err: any) {
-      toast.error("Login failed. Please try again.");
+      const errorMsg = err.response?.data?.error || "Login failed. Please try again.";
+      toast.error(errorMsg);
+      
+      if (err.response?.data?.code === "TOKEN_EXPIRED") {
+        setIsExpiredModalOpen(true);
+      }
+      
       localStorage.removeItem("md_token");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await axios.post("/api/auth/logout", { token });
+    } catch (err) {
+      console.error("Logout error:", err);
+    }
     localStorage.removeItem("md_token");
     setIsAuth(false);
     setIsAdmin(false);
@@ -330,136 +298,36 @@ export default function App() {
       return;
     }
 
-    // Check Restrictions
-    if (restrictions[pair] && Date.now() < restrictions[pair]) {
-      setShowRestrictionModal(true);
-      return;
-    }
-
     setIsGenerating(true);
     setSignal(null);
     try {
-      let signalData: Signal | null = null;
-
-      if (broker === "binance") {
-        const symbol = pair.replace("/", "").toUpperCase();
-        const response = await axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
-        const ticker = response.data;
-
-        const priceChangePercent = parseFloat(ticker.priceChangePercent);
-        const lastPrice = parseFloat(ticker.lastPrice);
-        
-        const type = priceChangePercent > 0 ? "BUY" : "SELL";
-        const tp = type === "BUY" ? lastPrice * 1.015 : lastPrice * 0.985;
-        const sl = type === "BUY" ? lastPrice * 0.99 : lastPrice * 1.01;
-
-        signalData = {
-          type,
-          entry: lastPrice,
-          tp: tp.toFixed(symbol.includes("USDT") ? 4 : 2),
-          sl: sl.toFixed(symbol.includes("USDT") ? 4 : 2),
-          confidence: Math.abs(priceChangePercent) > 1.5 ? "High" : "Medium",
-          confirmationZone: type === "BUY" ? `${(lastPrice * 0.998).toFixed(4)} - ${lastPrice.toFixed(4)}` : `${lastPrice.toFixed(4)} - ${(lastPrice * 1.002).toFixed(4)}`,
-          recommendations: [
-            "Wait for a 5-minute candle close above entry for confirmation.",
-            "Use 3-5x leverage for safe risk management.",
-            "Scenario: If price breaks SL, wait for retest of the zone before re-entry."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-      } else if (broker === "forex") {
-        const symbol = pair.split(" ")[0].replace("/", "");
-        const apiKey = import.meta.env.VITE_TWELVE_DATA_API_KEY;
-        
-        let lastPrice = 0;
-        let priceChange = 0;
-
-        if (apiKey) {
-          const response = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${apiKey}`);
-          if (response.data && response.data.close) {
-            lastPrice = parseFloat(response.data.close);
-            priceChange = parseFloat(response.data.percent_change || "0");
-          }
-        }
-
-        // Fallback to realistic mock if API fails or no key, but warn user
-        if (!lastPrice) {
-          try {
-            const base = symbol.substring(0, 3);
-            const quote = symbol.substring(3, 6);
-            const yahooSymbol = `${base}${quote}=X`;
-            const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`)}`);
-            const data = JSON.parse(res.data.contents);
-            if (data.chart && data.chart.result) {
-              const result = data.chart.result[0];
-              lastPrice = result.meta.regularMarketPrice;
-              const previousClose = result.meta.previousClose;
-              priceChange = ((lastPrice - previousClose) / previousClose) * 100;
-            }
-          } catch (e) {
-            // Final fallback to Frankfurter if Yahoo fails
-            try {
-              const res = await axios.get(`https://api.frankfurter.app/latest?from=${symbol.substring(0,3)}&to=${symbol.substring(3,6)}`);
-              lastPrice = res.data.rates[symbol.substring(3,6)];
-            } catch (err) {
-              lastPrice = 1.0850 + (Math.random() * 0.01);
-            }
-          }
-        }
-        
-        const type = priceChange >= 0 ? "BUY" : "SELL";
-        
-        signalData = {
-          type,
-          entry: lastPrice.toFixed(5),
-          tp: (type === "BUY" ? lastPrice + 0.0050 : lastPrice - 0.0050).toFixed(5),
-          sl: (type === "BUY" ? lastPrice - 0.0030 : lastPrice + 0.0030).toFixed(5),
-          confidence: "High",
-          confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
-          recommendations: [
-            "Check USD News (CPI/FOMC) before entering.",
-            "Recommended Risk: 1% per trade.",
-            "Scenario: Strong rejection from the H1 zone confirms the move."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-      } else if (broker === "quotex") {
-        const type = Math.random() > 0.5 ? "CALL" : "PUT";
-        signalData = {
-          type,
-          entry: "Market Price",
-          duration: timeframe || "1m",
-          confidence: "High",
-          confirmationZone: "Next Candle Opening",
-          recommendations: [
-            "Avoid trading during high volatility news.",
-            "Use Martingale only up to Step 1 if needed.",
-            "Scenario: Wait for the current candle to exhaust before entry."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-
-        // Set Restriction
-        const value = parseInt(timeframe);
-        let durationMs = 60000;
-        if (timeframe.endsWith("s")) durationMs = value * 1000;
-        else if (timeframe.endsWith("m")) durationMs = value * 60 * 1000;
-        else if (timeframe.endsWith("h")) durationMs = value * 60 * 60 * 1000;
-        else if (timeframe.endsWith("d")) durationMs = value * 24 * 60 * 60 * 1000;
-
-        setRestrictions(prev => ({
-          ...prev,
-          [pair]: Date.now() + durationMs
-        }));
-      }
+      const response = await axios.post("/api/signals/generate", { 
+        broker, 
+        pair, 
+        timeframe,
+        token 
+      });
+      const signalData = response.data;
 
       setSignal(signalData);
       toast.success("Signal Generated!");
-    } catch (err) {
-      toast.error("Failed to generate signal");
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.error || "Failed to generate signal";
+      toast.error(errorMsg);
+      
+      // If it's a Quotex restriction with remaining time, set the local restriction state
+      if (err.response?.data?.remainingMs) {
+        setRestrictions(prev => ({
+          ...prev,
+          [pair]: Date.now() + err.response.data.remainingMs
+        }));
+        setShowRestrictionModal(true);
+      }
+      
+      // If there's an active signal, show it
+      if (err.response?.data?.activeSignal) {
+        setSignal(err.response.data.activeSignal);
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -857,9 +725,12 @@ export default function App() {
                           <Shield className="w-4 h-4 text-indigo-400" />
                           <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Confirmation Zone</span>
                         </div>
-                        <div className="text-sm font-mono text-white bg-indigo-500/10 p-2 rounded-lg border border-indigo-500/20 text-center">
+                        <div className="text-sm font-mono text-white bg-indigo-500/10 p-3 rounded-xl border border-indigo-500/20 text-center font-bold">
                           {signal.confirmationZone}
                         </div>
+                        <p className="mt-2 text-[10px] text-slate-500 text-center leading-tight">
+                          💡 <span className="font-medium">How to use:</span> Wait for the market price to reach this specific zone before entering your trade. This confirms the trend and reduces risk.
+                        </p>
                       </div>
                     )}
 
