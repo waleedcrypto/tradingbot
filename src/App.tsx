@@ -20,6 +20,7 @@ import axios from "axios";
 import { supabase } from "./lib/supabase";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { GoogleGenAI, Type } from "@google/genai";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -339,109 +340,136 @@ export default function App() {
     setIsGenerating(true);
     setSignal(null);
     try {
-      let signalData: Signal | null = null;
+      let marketData: any = null;
+      let symbol = "";
 
       if (broker === "binance") {
-        const symbol = pair.replace("/", "").toUpperCase();
-        const response = await axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
-        const ticker = response.data;
-
-        const priceChangePercent = parseFloat(ticker.priceChangePercent);
-        const lastPrice = parseFloat(ticker.lastPrice);
+        symbol = pair.replace("/", "").toUpperCase();
+        const response = await axios.get(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=24`);
+        marketData = response.data.map((k: any) => ({
+          time: new Date(k[0]).toISOString(),
+          open: k[1],
+          high: k[2],
+          low: k[3],
+          close: k[4],
+          volume: k[5]
+        }));
+      } else if (broker === "forex" || broker === "quotex") {
+        symbol = pair.split(" ")[0];
+        const apiKey = import.meta.env.VITE_TWELVE_DATA_API_KEY || "5df5b89ecdfe4649a365c0f3ba8706ad";
         
-        const type = priceChangePercent > 0 ? "BUY" : "SELL";
-        const tp = type === "BUY" ? lastPrice * 1.015 : lastPrice * 0.985;
-        const sl = type === "BUY" ? lastPrice * 0.99 : lastPrice * 1.01;
-
-        signalData = {
-          type,
-          entry: lastPrice,
-          tp: tp.toFixed(symbol.includes("USDT") ? 4 : 2),
-          sl: sl.toFixed(symbol.includes("USDT") ? 4 : 2),
-          confidence: Math.abs(priceChangePercent) > 1.5 ? "High" : "Medium",
-          confirmationZone: type === "BUY" ? `${(lastPrice * 0.998).toFixed(4)} - ${lastPrice.toFixed(4)}` : `${lastPrice.toFixed(4)} - ${(lastPrice * 1.002).toFixed(4)}`,
-          recommendations: [
-            "Wait for a 5-minute candle close above entry for confirmation.",
-            "Use 3-5x leverage for safe risk management.",
-            "Scenario: If price breaks SL, wait for retest of the zone before re-entry."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-      } else if (broker === "forex") {
-        const symbol = pair.split(" ")[0].replace("/", "");
-        const apiKey = import.meta.env.VITE_TWELVE_DATA_API_KEY;
-        
-        let lastPrice = 0;
-        let priceChange = 0;
-
-        if (apiKey) {
-          const response = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${apiKey}`);
-          if (response.data && response.data.close) {
-            lastPrice = parseFloat(response.data.close);
-            priceChange = parseFloat(response.data.percent_change || "0");
+        try {
+          const response = await axios.get(`https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1h&outputsize=24&apikey=${apiKey}`);
+          if (response.data && response.data.values) {
+            marketData = response.data.values;
+          } else {
+            // Fallback to quote if time_series fails
+            const quoteRes = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${apiKey}`);
+            if (quoteRes.data && quoteRes.data.close) {
+              marketData = [quoteRes.data];
+            }
           }
+        } catch (e) {
+          console.error("Twelve Data Error:", e);
         }
 
-        // Fallback to realistic mock if API fails or no key, but warn user
-        if (!lastPrice) {
+        // Fallback to Yahoo Finance via AllOrigins if Twelve Data fails
+        if (!marketData) {
           try {
-            const base = symbol.substring(0, 3);
-            const quote = symbol.substring(3, 6);
-            const yahooSymbol = `${base}${quote}=X`;
-            const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`)}`);
+            const cleanSymbol = symbol.replace("/", "");
+            const yahooSymbol = symbol.includes("/") ? `${cleanSymbol}=X` : `${cleanSymbol}=F`;
+            const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1h&range=1d`)}`);
             const data = JSON.parse(res.data.contents);
             if (data.chart && data.chart.result) {
               const result = data.chart.result[0];
-              lastPrice = result.meta.regularMarketPrice;
-              const previousClose = result.meta.previousClose;
-              priceChange = ((lastPrice - previousClose) / previousClose) * 100;
+              const quotes = result.indicators.quote[0];
+              marketData = result.timestamp.map((t: number, i: number) => ({
+                datetime: new Date(t * 1000).toISOString(),
+                open: quotes.open[i],
+                high: quotes.high[i],
+                low: quotes.low[i],
+                close: quotes.close[i],
+                volume: quotes.volume[i]
+              })).reverse();
             }
           } catch (e) {
-            // Final fallback to Frankfurter if Yahoo fails
-            try {
-              const res = await axios.get(`https://api.frankfurter.app/latest?from=${symbol.substring(0,3)}&to=${symbol.substring(3,6)}`);
-              lastPrice = res.data.rates[symbol.substring(3,6)];
-            } catch (err) {
-              lastPrice = 1.0850 + (Math.random() * 0.01);
-            }
+            console.error("Yahoo Fallback Error:", e);
           }
         }
-        
-        const type = priceChange >= 0 ? "BUY" : "SELL";
-        
-        signalData = {
-          type,
-          entry: lastPrice.toFixed(5),
-          tp: (type === "BUY" ? lastPrice + 0.0050 : lastPrice - 0.0050).toFixed(5),
-          sl: (type === "BUY" ? lastPrice - 0.0030 : lastPrice + 0.0030).toFixed(5),
-          confidence: "High",
-          confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
-          recommendations: [
-            "Check USD News (CPI/FOMC) before entering.",
-            "Recommended Risk: 1% per trade.",
-            "Scenario: Strong rejection from the H1 zone confirms the move."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-      } else if (broker === "quotex") {
-        const type = Math.random() > 0.5 ? "CALL" : "PUT";
-        signalData = {
-          type,
-          entry: "Market Price",
-          duration: timeframe || "1m",
-          confidence: "High",
-          confirmationZone: "Next Candle Opening",
-          recommendations: [
-            "Avoid trading during high volatility news.",
-            "Use Martingale only up to Step 1 if needed.",
-            "Scenario: Wait for the current candle to exhaust before entry."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
+      }
 
+      if (!marketData || marketData.length === 0) {
+        throw new Error("Could not fetch live market data. Please try again later.");
+      }
+
+      // Use Gemini to analyze data and generate signal
+      const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+      
+      const prompt = `
+        You are a professional Forex and Crypto trader with 20 years of experience.
+        Analyze the following live market data for ${pair} on ${broker} broker.
+        Current Time: ${new Date().toISOString()}
+        
+        Market Data (Last 24 hours OHLC):
+        ${JSON.stringify(marketData.slice(0, 10), null, 2)}
+        
+        Generate a high-probability trading signal.
+        - For Binance/Forex: Use type "BUY" or "SELL".
+        - For Quotex: Use type "CALL" or "PUT" (Binary Options).
+        - Provide Entry Price (current market price), Take Profit (TP), and Stop Loss (SL).
+        - TP and SL should be realistic based on current volatility.
+        - Confidence level (High, Medium, Low).
+        - Confirmation Zone (Price range to look for entry).
+        - 3 professional recommendations/scenarios.
+        
+        Return ONLY a JSON object matching this schema:
+        {
+          "type": "BUY" | "SELL" | "CALL" | "PUT",
+          "entry": string,
+          "tp": string (optional for Quotex),
+          "sl": string (optional for Quotex),
+          "duration": string (only for Quotex, e.g. "1m", "5m"),
+          "confidence": "High" | "Medium" | "Low",
+          "confirmationZone": string,
+          "recommendations": string[]
+        }
+      `;
+
+      const result = await genAI.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              type: { type: Type.STRING, enum: ["BUY", "SELL", "CALL", "PUT"] },
+              entry: { type: Type.STRING },
+              tp: { type: Type.STRING },
+              sl: { type: Type.STRING },
+              duration: { type: Type.STRING },
+              confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+              confirmationZone: { type: Type.STRING },
+              recommendations: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              }
+            },
+            required: ["type", "entry", "confidence", "confirmationZone", "recommendations"]
+          }
+        }
+      });
+
+      const signalJson = JSON.parse(result.text || "{}");
+      
+      const signalData: Signal = {
+        ...signalJson,
+        timestamp: new Date().toISOString(),
+        pair
+      };
+
+      if (broker === "quotex") {
+        signalData.duration = timeframe || "1m";
         // Set Restriction
         const value = parseInt(timeframe);
         let durationMs = 60000;
@@ -457,9 +485,10 @@ export default function App() {
       }
 
       setSignal(signalData);
-      toast.success("Signal Generated!");
-    } catch (err) {
-      toast.error("Failed to generate signal");
+      toast.success("Signal Generated with AI Analysis!");
+    } catch (err: any) {
+      console.error("Signal Generation Error:", err);
+      toast.error(err.message || "Failed to generate signal");
     } finally {
       setIsGenerating(false);
     }
