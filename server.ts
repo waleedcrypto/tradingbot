@@ -17,8 +17,13 @@ const PORT = 3000;
 app.use(express.json());
 
 // Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn("Supabase credentials missing. Auth will only work with hardcoded admin token.");
+}
+
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Binance API Setup
@@ -64,73 +69,6 @@ app.get("/api/market/quotex-pairs", async (req, res) => {
   res.json(pairs);
 });
 
-// Token Validation
-app.post("/api/auth/validate-token", async (req, res) => {
-  const { token } = req.body;
-
-  if (!token) {
-    return res.status(400).json({ error: "Token is required" });
-  }
-
-  try {
-    // Hardcoded Admin Token Fallback
-    if (token === "adminwaleed786") {
-      return res.json({ valid: true, role: "admin", token: { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true } });
-    }
-
-    // Check if it's an admin token first
-    const { data: adminToken, error: adminError } = await supabase
-      .from("admin_tokens")
-      .select("*")
-      .eq("token", token)
-      .single();
-
-    if (adminToken) {
-      return res.json({ valid: true, role: "admin", token: adminToken });
-    }
-
-    // Check if it's a user token
-    const { data: userToken, error: userError } = await supabase
-      .from("users_tokens")
-      .select("*")
-      .eq("token", token)
-      .single();
-
-    if (!userToken) {
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
-    // Check expiry
-    const now = new Date();
-    const expiryDate = new Date(userToken.expiry_date);
-
-    if (expiryDate < now) {
-      return res.status(401).json({ 
-        error: "Your access token has expired. Please renew your subscription to continue using MW TRADER.", 
-        code: "TOKEN_EXPIRED" 
-      });
-    }
-
-    if (!userToken.is_active) {
-      return res.status(401).json({ error: "Token is inactive" });
-    }
-
-    res.json({ 
-      valid: true, 
-      role: "user", 
-      token: {
-        ...userToken,
-        expiry_date: userToken.expiry_date,
-        label: userToken.label,
-        created_at: userToken.created_at
-      } 
-    });
-  } catch (error) {
-    console.error("Auth error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 // Signal Generation Engine
 const getYahooSymbol = (pair: string) => {
   const p = pair.toUpperCase();
@@ -168,7 +106,17 @@ app.post("/api/auth/validate-token", async (req, res) => {
   try {
     // Hardcoded Admin Token Fallback
     if (token === "adminwaleed786") {
-      return res.json({ valid: true, role: "admin", token: { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true } });
+      return res.json({ 
+        valid: true, 
+        role: "admin", 
+        token: { 
+          id: "master-admin", 
+          token: "adminwaleed786", 
+          role: "admin", 
+          is_active: true,
+          label: "Master Admin"
+        } 
+      });
     }
 
     // Check if it's an admin token first
@@ -176,7 +124,7 @@ app.post("/api/auth/validate-token", async (req, res) => {
       .from("admin_tokens")
       .select("*")
       .eq("token", token)
-      .single();
+      .maybeSingle();
 
     if (adminToken) {
       return res.json({ valid: true, role: "admin", token: adminToken });
@@ -187,10 +135,10 @@ app.post("/api/auth/validate-token", async (req, res) => {
       .from("users_tokens")
       .select("*")
       .eq("token", token)
-      .single();
+      .maybeSingle();
 
     if (!userToken) {
-      return res.status(401).json({ error: "Invalid token" });
+      return res.status(401).json({ error: "Invalid token. Please check your token and try again." });
     }
 
     // Check expiry
@@ -247,7 +195,7 @@ app.post("/api/auth/validate-token", async (req, res) => {
     });
   } catch (error) {
     console.error("Auth error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error during authentication. Please check your database connection." });
   }
 });
 
