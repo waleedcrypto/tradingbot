@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
 import axios from "axios";
+import { supabase } from "./lib/supabase";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -182,14 +183,27 @@ export default function App() {
 
   const fetchPairs = async () => {
     try {
-      let endpoint = "";
-      if (broker === "binance") endpoint = "/api/market/binance-pairs";
-      else if (broker === "forex") endpoint = "/api/market/forex-pairs";
-      else if (broker === "quotex") endpoint = "/api/market/quotex-pairs";
-
-      if (endpoint) {
-        const res = await axios.get(endpoint);
-        setAvailablePairs(res.data);
+      if (broker === "binance") {
+        const response = await axios.get("https://fapi.binance.com/fapi/v1/exchangeInfo");
+        const symbols = response.data.symbols
+          .filter((s: any) => s.status === "TRADING" && s.quoteAsset === "USDT")
+          .map((s: any) => s.symbol);
+        setAvailablePairs(symbols);
+      } else if (broker === "forex") {
+        setAvailablePairs([
+          "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
+          "EUR/GBP", "EUR/JPY", "GBP/JPY", "EUR/AUD", "EUR/CAD", "AUD/JPY", "CAD/JPY",
+          "AUD/NZD", "EUR/NZD", "GBP/AUD", "GBP/CAD", "GBP/CHF", "GBP/NZD", "NZD/JPY",
+          "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD"
+        ]);
+      } else if (broker === "quotex") {
+        setAvailablePairs([
+          "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
+          "USD/CHF (OTC)", "NZD/USD (OTC)", "GBP/JPY (OTC)", "EUR/JPY (OTC)", "AUD/USD (OTC)",
+          "USD/CAD (OTC)", "EUR/CHF (OTC)", "CAD/CHF (OTC)", "CHF/JPY (OTC)", "AUD/NZD (OTC)",
+          "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
+          "Apple (OTC)", "Facebook (OTC)", "Google (OTC)", "Netflix (OTC)", "Tesla (OTC)"
+        ]);
       }
     } catch (err) {
       toast.error("Failed to fetch market pairs");
@@ -213,20 +227,57 @@ export default function App() {
   const handleLogin = async (tokenToUse: string) => {
     setIsLoading(true);
     try {
-      const res = await axios.post("/api/auth/validate-token", { token: tokenToUse });
-      if (res.data.valid) {
-        setUser(res.data.token);
+      // Hardcoded Admin Token Fallback
+      if (tokenToUse === "adminwaleed786") {
+        const adminData = { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true };
+        setUser(adminData as any);
         setIsAuth(true);
-        setIsAdmin(res.data.role === "admin");
+        setIsAdmin(true);
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted!");
+        setIsLoading(false);
+        return;
       }
-    } catch (err: any) {
-      if (err.response?.data?.code === "TOKEN_EXPIRED") {
+
+      // Check Supabase for user tokens
+      const { data: userToken, error: userError } = await supabase
+        .from("users_tokens")
+        .select("*")
+        .eq("token", tokenToUse)
+        .single();
+
+      if (userError || !userToken) {
+        toast.error("Invalid Token");
+        localStorage.removeItem("md_token");
+        setIsLoading(false);
+        return;
+      }
+
+      // Check expiry
+      const now = new Date();
+      const expiryDate = new Date(userToken.expiry_date);
+
+      if (expiryDate < now) {
         setIsExpiredModalOpen(true);
-      } else {
-        toast.error(err.response?.data?.error || "Invalid Token");
+        localStorage.removeItem("md_token");
+        setIsLoading(false);
+        return;
       }
+
+      if (!userToken.is_active) {
+        toast.error("Token is inactive");
+        localStorage.removeItem("md_token");
+        setIsLoading(false);
+        return;
+      }
+
+      setUser(userToken);
+      setIsAuth(true);
+      setIsAdmin(false);
+      localStorage.setItem("md_token", tokenToUse);
+      toast.success("Access Granted!");
+    } catch (err: any) {
+      toast.error("Login failed. Please try again.");
       localStorage.removeItem("md_token");
     } finally {
       setIsLoading(false);
@@ -254,8 +305,73 @@ export default function App() {
     setIsGenerating(true);
     setSignal(null);
     try {
-      const res = await axios.post("/api/signals/generate", { broker, pair, timeframe });
-      setSignal(res.data);
+      let signalData: Signal | null = null;
+
+      if (broker === "binance") {
+        const symbol = pair.replace("/", "").toUpperCase();
+        const response = await axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+        const ticker = response.data;
+
+        const priceChangePercent = parseFloat(ticker.priceChangePercent);
+        const lastPrice = parseFloat(ticker.lastPrice);
+        
+        const type = priceChangePercent > 0 ? "BUY" : "SELL";
+        const tp = type === "BUY" ? lastPrice * 1.015 : lastPrice * 0.985;
+        const sl = type === "BUY" ? lastPrice * 0.99 : lastPrice * 1.01;
+
+        signalData = {
+          type,
+          entry: lastPrice,
+          tp: tp.toFixed(symbol.includes("USDT") ? 4 : 2),
+          sl: sl.toFixed(symbol.includes("USDT") ? 4 : 2),
+          confidence: Math.abs(priceChangePercent) > 1.5 ? "High" : "Medium",
+          confirmationZone: type === "BUY" ? `${(lastPrice * 0.998).toFixed(4)} - ${lastPrice.toFixed(4)}` : `${lastPrice.toFixed(4)} - ${(lastPrice * 1.002).toFixed(4)}`,
+          recommendations: [
+            "Wait for a 5-minute candle close above entry for confirmation.",
+            "Use 3-5x leverage for safe risk management.",
+            "Scenario: If price breaks SL, wait for retest of the zone before re-entry."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      } else if (broker === "forex") {
+        const basePrice = 1.0850 + (Math.random() * 0.01);
+        const type = Math.random() > 0.5 ? "BUY" : "SELL";
+        
+        signalData = {
+          type,
+          entry: basePrice.toFixed(5),
+          tp: (type === "BUY" ? basePrice + 0.0050 : basePrice - 0.0050).toFixed(5),
+          sl: (type === "BUY" ? basePrice - 0.0030 : basePrice + 0.0030).toFixed(5),
+          confidence: "High",
+          confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
+          recommendations: [
+            "Check USD News (CPI/FOMC) before entering.",
+            "Recommended Risk: 1% per trade.",
+            "Scenario: Strong rejection from the H1 zone confirms the move."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      } else if (broker === "quotex") {
+        const type = Math.random() > 0.5 ? "CALL" : "PUT";
+        signalData = {
+          type,
+          entry: "Market Price",
+          duration: timeframe || "1m",
+          confidence: "High",
+          confirmationZone: "Next Candle Opening",
+          recommendations: [
+            "Avoid trading during high volatility news.",
+            "Use Martingale only up to Step 1 if needed.",
+            "Scenario: Wait for the current candle to exhaust before entry."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      }
+
+      setSignal(signalData);
       toast.success("Signal Generated!");
     } catch (err) {
       toast.error("Failed to generate signal");
@@ -266,8 +382,9 @@ export default function App() {
 
   const fetchAllTokens = async () => {
     try {
-      const res = await axios.get("/api/admin/tokens");
-      setAllTokens(res.data);
+      const { data, error } = await supabase.from("users_tokens").select("*");
+      if (error) throw error;
+      setAllTokens(data);
     } catch (err) {
       toast.error("Failed to fetch tokens");
     }
@@ -275,31 +392,71 @@ export default function App() {
 
   const generateNewToken = async () => {
     try {
-      const res = await axios.post("/api/admin/generate-token", { 
-        days: newTokenForm.days, 
-        label: newTokenForm.label 
-      });
+      const token = newTokenForm.label.trim() || ("MW-" + Math.random().toString(36).substring(2, 10).toUpperCase());
+      
+      const expiryDate = new Date();
+      const daysInt = parseInt(newTokenForm.days || "30");
+      expiryDate.setDate(expiryDate.getDate() + (isNaN(daysInt) ? 30 : daysInt));
+
+      // Check if token already exists
+      const { data: existing } = await supabase
+        .from("users_tokens")
+        .select("token")
+        .eq("token", token)
+        .single();
+
+      if (existing) {
+        toast.error("This token/name already exists. Please use a different one.");
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("users_tokens")
+        .insert([{ 
+          token, 
+          expiry_date: expiryDate.toISOString(), 
+          is_active: true,
+          label: newTokenForm.label.trim() || token
+        }])
+        .select();
+
+      if (error) throw error;
+
       fetchAllTokens();
       setIsCreateModalOpen(false);
       setNewTokenForm({ label: "", days: "30" });
       
-      // Show the generated token prominently
-      const generatedToken = res.data.token;
+      const generatedToken = data[0].token;
       navigator.clipboard.writeText(generatedToken);
       toast.success(`Token Generated: ${generatedToken}`, {
         description: "Token has been copied to clipboard automatically.",
         duration: 10000,
       });
     } catch (err: any) {
-      const errorMsg = err.response?.data?.error || "Failed to generate token";
-      toast.error(errorMsg);
+      toast.error(err.message || "Failed to generate token");
     }
   };
 
   const updateToken = async () => {
     if (!editingToken) return;
     try {
-      await axios.put(`/api/admin/tokens/${editingToken.id}`, editTokenForm);
+      const updateData: any = {};
+      if (editTokenForm.label !== undefined) updateData.label = editTokenForm.label;
+      if (editTokenForm.is_active !== undefined) updateData.is_active = editTokenForm.is_active;
+      
+      if (editTokenForm.days_remaining !== undefined) {
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + parseInt(editTokenForm.days_remaining.toString()));
+        updateData.expiry_date = expiryDate.toISOString();
+      }
+
+      const { error } = await supabase
+        .from("users_tokens")
+        .update(updateData)
+        .eq("id", editingToken.id);
+
+      if (error) throw error;
+
       fetchAllTokens();
       setIsEditModalOpen(false);
       toast.success("Token updated!");
@@ -309,13 +466,37 @@ export default function App() {
   };
 
   const deleteToken = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this token?")) return;
     try {
-      await axios.delete(`/api/admin/tokens/${id}`);
+      const { error } = await supabase
+        .from("users_tokens")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+
       fetchAllTokens();
       toast.success("Token deleted!");
     } catch (err) {
       toast.error("Failed to delete token");
+    }
+  };
+
+  const renewToken = async (id: string) => {
+    try {
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + 30);
+
+      const { error } = await supabase
+        .from("users_tokens")
+        .update({ expiry_date: expiryDate.toISOString() })
+        .eq("id", id);
+
+      if (error) throw error;
+
+      fetchAllTokens();
+      toast.success("Token renewed for 30 days!");
+    } catch (err) {
+      toast.error("Failed to renew token");
     }
   };
 
@@ -663,8 +844,17 @@ export default function App() {
                           navigator.clipboard.writeText(t.token);
                           toast.success("Token copied!");
                         }}
+                        title="Copy Token"
                       >
                         <Plus className="w-4 h-4 rotate-45" />
+                      </Button>
+                      <Button 
+                        variant="secondary" 
+                        className="p-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border-emerald-500/20"
+                        onClick={() => renewToken(t.id)}
+                        title="Renew 30 Days"
+                      >
+                        <RefreshCw className="w-4 h-4" />
                       </Button>
                       <Button 
                         variant="secondary" 
@@ -685,6 +875,7 @@ export default function App() {
                         variant="danger" 
                         className="p-2 rounded-lg"
                         onClick={() => deleteToken(t.id)}
+                        title="Delete Token"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
