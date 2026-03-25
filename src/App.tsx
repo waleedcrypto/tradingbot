@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Component } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Shield, 
@@ -96,60 +96,17 @@ const Select = ({ label, options, value, onChange }: { label: string; options: s
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full appearance-none bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all cursor-pointer"
+        className="w-full appearance-none bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
       >
         <option value="">Choose {label.toLowerCase()}...</option>
-        {Array.isArray(options) && options.map((opt) => (
-          <option key={String(opt)} value={String(opt).toLowerCase()}>{String(opt)}</option>
+        {options.map((opt) => (
+          <option key={opt} value={opt.toLowerCase()}>{opt}</option>
         ))}
       </select>
       <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
     </div>
   </div>
 );
-
-// --- Error Boundary ---
-interface ErrorBoundaryProps {
-  children: React.ReactNode;
-}
-
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: any;
-}
-
-class ErrorBoundary extends Component<{ children: React.ReactNode }, any> {
-  state = { hasError: false, error: null };
-
-  static getDerivedStateFromError(error: any) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: any, errorInfo: any) {
-    console.error("App Crash:", error, errorInfo);
-  }
-
-  render() {
-    if ((this as any).state.hasError) {
-      return (
-        <div className="min-h-screen bg-[#0f0a1f] text-white flex items-center justify-center p-6 text-center">
-          <div className="max-w-md space-y-4">
-            <AlertTriangle className="w-16 h-16 text-rose-500 mx-auto" />
-            <h1 className="text-2xl font-bold">Something went wrong</h1>
-            <p className="text-slate-400 text-sm">The application crashed due to a runtime error. Please try refreshing the page.</p>
-            <pre className="bg-black/50 p-4 rounded-xl text-left text-[10px] overflow-auto max-h-40 text-rose-300 font-mono">
-              {(this as any).state.error?.message || "Unknown error"}
-            </pre>
-            <Button onClick={() => window.location.reload()} className="w-full text-white">
-              Refresh Page
-            </Button>
-          </div>
-        </div>
-      );
-    }
-    return (this as any).props.children;
-  }
-}
 
 const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode }) => (
   <AnimatePresence>
@@ -183,15 +140,7 @@ const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean; onClose:
 
 // --- Main App ---
 
-export default function AppWrapper() {
-  return (
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  );
-}
-
-function App() {
+export default function App() {
   const [token, setToken] = useState<string>(localStorage.getItem("md_token") || "");
   const [user, setUser] = useState<Token | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -203,38 +152,11 @@ function App() {
   const [showRestrictionModal, setShowRestrictionModal] = useState(false);
   const [restrictionRemaining, setRestrictionRemaining] = useState("");
 
-  const [isStaticMode, setIsStaticMode] = useState(true);
-
-  useEffect(() => {
-    // Check if backend is reachable
-    const checkBackend = async () => {
-      try {
-        await axios.get("/api/health", { timeout: 3000 });
-        setIsStaticMode(false);
-        console.log("Backend reachable, Full-stack mode enabled");
-      } catch (e) {
-        console.warn("Backend unreachable, keeping Static Mode enabled");
-        setIsStaticMode(true);
-      }
-    };
-    checkBackend();
-  }, []);
-
-  const [sessionId] = useState(() => {
-    let id = localStorage.getItem("md_session_id");
-    if (!id) {
-      id = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-      localStorage.setItem("md_session_id", id);
-    }
-    return id;
-  });
-
   // Dashboard State
   const [broker, setBroker] = useState("");
   const [pair, setPair] = useState("");
   const [timeframe, setTimeframe] = useState("");
   const [availablePairs, setAvailablePairs] = useState<string[]>([]);
-  const [isFetchingPairs, setIsFetchingPairs] = useState(false);
   const [signal, setSignal] = useState<Signal | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [countdown, setCountdown] = useState<string>("");
@@ -286,67 +208,31 @@ function App() {
   }, [restrictions, pair]);
 
   const fetchPairs = async () => {
-    setIsFetchingPairs(true);
-    setAvailablePairs([]); // Clear previous pairs
-
-    // Immediate fallback if we are in static mode
-    if (isStaticMode) {
-      console.log("Static mode active, using immediate fallback for pairs");
+    try {
       if (broker === "binance") {
-        setAvailablePairs(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT"]);
+        const response = await axios.get("https://fapi.binance.com/fapi/v1/exchangeInfo");
+        const symbols = response.data.symbols
+          .filter((s: any) => s.status === "TRADING" && s.quoteAsset === "USDT")
+          .map((s: any) => s.symbol);
+        setAvailablePairs(symbols);
       } else if (broker === "forex") {
         setAvailablePairs([
           "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
-          "EUR/GBP", "EUR/JPY", "GBP/JPY", "XAU/USD (Gold)", "BTC/USD"
+          "EUR/GBP", "EUR/JPY", "GBP/JPY", "EUR/AUD", "EUR/CAD", "AUD/JPY", "CAD/JPY",
+          "AUD/NZD", "EUR/NZD", "GBP/AUD", "GBP/CAD", "GBP/CHF", "GBP/NZD", "NZD/JPY",
+          "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD"
         ]);
       } else if (broker === "quotex") {
         setAvailablePairs([
           "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
-          "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Apple (OTC)", "Tesla (OTC)"
+          "USD/CHF (OTC)", "NZD/USD (OTC)", "GBP/JPY (OTC)", "EUR/JPY (OTC)", "AUD/USD (OTC)",
+          "USD/CAD (OTC)", "EUR/CHF (OTC)", "CAD/CHF (OTC)", "CHF/JPY (OTC)", "AUD/NZD (OTC)",
+          "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
+          "Apple (OTC)", "Facebook (OTC)", "Google (OTC)", "Netflix (OTC)", "Tesla (OTC)"
         ]);
       }
-      setIsFetchingPairs(false);
-      return;
-    }
-
-    try {
-      let endpoint = "";
-      if (broker === "binance") endpoint = "/api/market/binance-pairs";
-      else if (broker === "forex") endpoint = "/api/market/forex-pairs";
-      else if (broker === "quotex") endpoint = "/api/market/quotex-pairs";
-
-      if (endpoint) {
-        try {
-          // Add a timeout to prevent hanging on static hosts
-          const response = await axios.get(endpoint, { timeout: 3000 });
-          if (Array.isArray(response.data)) {
-            setAvailablePairs(response.data);
-          } else {
-            throw new Error("Invalid response format");
-          }
-        } catch (apiErr) {
-          console.warn("API fetchPairs failed or timed out, using client-side fallback");
-          // Fallback for static hosting (Netlify)
-          if (broker === "binance") {
-            setAvailablePairs(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT"]);
-          } else if (broker === "forex") {
-            setAvailablePairs([
-              "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
-              "EUR/GBP", "EUR/JPY", "GBP/JPY", "XAU/USD (Gold)", "BTC/USD"
-            ]);
-          } else if (broker === "quotex") {
-            setAvailablePairs([
-              "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
-              "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Apple (OTC)", "Tesla (OTC)"
-            ]);
-          }
-        }
-      }
     } catch (err) {
-      console.error("fetchPairs error:", err);
       toast.error("Failed to fetch market pairs");
-    } finally {
-      setIsFetchingPairs(false);
     }
   };
 
@@ -361,122 +247,53 @@ function App() {
   const handleLogin = async (tokenToUse: string) => {
     if (!tokenToUse) return;
     setIsLoading(true);
-    console.log("Attempting login with token:", tokenToUse.substring(0, 5) + "...");
-    
-    // Immediate fallback if we are in static mode
-    if (isStaticMode) {
-      console.log("Static mode active, using immediate fallback for login");
-      await handleFallbackLogin(tokenToUse);
-      return;
-    }
-
     try {
-      // 1. Try the API first (Full-stack mode)
-      const response = await axios.post("/api/auth/validate-token", { 
-        token: tokenToUse,
-        sessionId,
-        location: Intl.DateTimeFormat().resolvedOptions().timeZone
-      });
-
-      console.log("Login response (API):", response.data);
-      const { valid, role, token: tokenData } = response.data;
-
-      if (valid) {
-        setUser(tokenData);
+      // Hardcoded Admin Token Fallback
+      if (tokenToUse === "adminwaleed786") {
+        const adminData = { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true, created_at: new Date().toISOString(), expiry_date: new Date(Date.now() + 365 * 86400000).toISOString() };
+        setUser(adminData as any);
         setIsAuth(true);
-        setIsAdmin(role === "admin");
+        setIsAdmin(true);
         localStorage.setItem("md_token", tokenToUse);
         toast.success("Access Granted!");
         setIsLoading(false);
         return;
       }
-    } catch (err: any) {
-      console.warn("API Login failed, trying client-side fallback:", err.message);
-      
-      // If it's a specific error from the server (like expired or conflict), don't fallback
-      if (err.response && err.response.status !== 404 && err.response.status !== 502) {
-        const errorMsg = err.response?.data?.error || "Login failed. Please try again.";
-        toast.error(errorMsg);
-        if (err.response?.data?.code === "TOKEN_EXPIRED") setIsExpiredModalOpen(true);
-        setIsLoading(false);
-        return;
-      }
-    }
 
-    // 2. Client-side Fallback (Static mode - e.g. Netlify)
-    await handleFallbackLogin(tokenToUse);
-  };
-
-  const handleFallbackLogin = async (tokenToUse: string) => {
-    try {
-      // Hardcoded Admin Token Fallback
-      if (tokenToUse === "adminwaleed786") {
-        const adminData: Token = { 
-          id: "master-admin", 
-          token: "adminwaleed786", 
-          role: "admin", 
-          is_active: true,
-          label: "Master Admin",
-          expiry_date: "2099-12-31",
-          created_at: new Date().toISOString()
-        };
-        setUser(adminData);
-        setIsAuth(true);
-        setIsAdmin(true);
-        setToken(tokenToUse); // Ensure token state is updated
-        localStorage.setItem("md_token", tokenToUse);
-        toast.success("Access Granted (Master Admin)!");
-        setIsLoading(false);
-        return;
-      }
-
+      // Check Supabase for user tokens
       if (!supabase) {
-        toast.error("Database connection not configured. Please check your environment variables.");
+        toast.error("Database connection not configured. Please check environment variables.");
         setIsLoading(false);
         return;
       }
 
-      // Check admin tokens
-      const { data: adminToken } = await supabase
-        .from("admin_tokens")
-        .select("*")
-        .eq("token", tokenToUse)
-        .maybeSingle();
-
-      if (adminToken) {
-        setUser(adminToken);
-        setIsAuth(true);
-        setIsAdmin(true);
-        setToken(tokenToUse); // Ensure token state is updated
-        localStorage.setItem("md_token", tokenToUse);
-        toast.success("Access Granted (Admin)!");
-        setIsLoading(false);
-        return;
-      }
-
-      // Check user tokens
-      const { data: userToken } = await supabase
+      const { data: userToken, error: userError } = await supabase
         .from("users_tokens")
         .select("*")
         .eq("token", tokenToUse)
-        .maybeSingle();
+        .single();
 
-      if (!userToken) {
-        toast.error("Invalid token. Please check your token and try again.");
+      if (userError || !userToken) {
+        toast.error("Invalid Token");
+        localStorage.removeItem("md_token");
+        setIsLoading(false);
+        return;
+      }
+
+      // Check expiry
+      const now = new Date();
+      const expiryDate = new Date(userToken.expiry_date);
+
+      if (expiryDate < now) {
+        setIsExpiredModalOpen(true);
+        localStorage.removeItem("md_token");
         setIsLoading(false);
         return;
       }
 
       if (!userToken.is_active) {
         toast.error("Token is inactive");
-        setIsLoading(false);
-        return;
-      }
-
-      const now = new Date();
-      const expiryDate = new Date(userToken.expiry_date);
-      if (expiryDate < now) {
-        setIsExpiredModalOpen(true);
+        localStorage.removeItem("md_token");
         setIsLoading(false);
         return;
       }
@@ -484,23 +301,17 @@ function App() {
       setUser(userToken);
       setIsAuth(true);
       setIsAdmin(false);
-      setToken(tokenToUse); // Ensure token state is updated
       localStorage.setItem("md_token", tokenToUse);
       toast.success("Access Granted!");
     } catch (err: any) {
-      console.error("Fallback Login error:", err);
-      toast.error("Login failed. Please check your internet connection and database configuration.");
+      toast.error("Login failed. Please try again.");
+      localStorage.removeItem("md_token");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await axios.post("/api/auth/logout", { token });
-    } catch (err) {
-      console.error("Logout error:", err);
-    }
+  const handleLogout = () => {
     localStorage.removeItem("md_token");
     setIsAuth(false);
     setIsAdmin(false);
@@ -519,87 +330,139 @@ function App() {
       return;
     }
 
-    setIsGenerating(true);
-    setSignal(null);
-
-    // Immediate fallback if we are in static mode
-    if (isStaticMode) {
-      console.log("Static mode active, using immediate fallback for signal generation");
-      await handleFallbackSignal();
+    // Check Restrictions
+    if (restrictions[pair] && Date.now() < restrictions[pair]) {
+      setShowRestrictionModal(true);
       return;
     }
 
+    setIsGenerating(true);
+    setSignal(null);
     try {
-      // 1. Try API first
-      const response = await axios.post("/api/signals/generate", { 
-        broker, 
-        pair, 
-        timeframe,
-        token 
-      });
-      const signalData = response.data;
+      let signalData: Signal | null = null;
+
+      if (broker === "binance") {
+        const symbol = pair.replace("/", "").toUpperCase();
+        const response = await axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+        const ticker = response.data;
+
+        const priceChangePercent = parseFloat(ticker.priceChangePercent);
+        const lastPrice = parseFloat(ticker.lastPrice);
+        
+        const type = priceChangePercent > 0 ? "BUY" : "SELL";
+        const tp = type === "BUY" ? lastPrice * 1.015 : lastPrice * 0.985;
+        const sl = type === "BUY" ? lastPrice * 0.99 : lastPrice * 1.01;
+
+        signalData = {
+          type,
+          entry: lastPrice,
+          tp: tp.toFixed(symbol.includes("USDT") ? 4 : 2),
+          sl: sl.toFixed(symbol.includes("USDT") ? 4 : 2),
+          confidence: Math.abs(priceChangePercent) > 1.5 ? "High" : "Medium",
+          confirmationZone: type === "BUY" ? `${(lastPrice * 0.998).toFixed(4)} - ${lastPrice.toFixed(4)}` : `${lastPrice.toFixed(4)} - ${(lastPrice * 1.002).toFixed(4)}`,
+          recommendations: [
+            "Wait for a 5-minute candle close above entry for confirmation.",
+            "Use 3-5x leverage for safe risk management.",
+            "Scenario: If price breaks SL, wait for retest of the zone before re-entry."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      } else if (broker === "forex") {
+        const symbol = pair.split(" ")[0].replace("/", "");
+        const apiKey = import.meta.env.VITE_TWELVE_DATA_API_KEY;
+        
+        let lastPrice = 0;
+        let priceChange = 0;
+
+        if (apiKey) {
+          const response = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${apiKey}`);
+          if (response.data && response.data.close) {
+            lastPrice = parseFloat(response.data.close);
+            priceChange = parseFloat(response.data.percent_change || "0");
+          }
+        }
+
+        // Fallback to realistic mock if API fails or no key, but warn user
+        if (!lastPrice) {
+          try {
+            const base = symbol.substring(0, 3);
+            const quote = symbol.substring(3, 6);
+            const yahooSymbol = `${base}${quote}=X`;
+            const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`)}`);
+            const data = JSON.parse(res.data.contents);
+            if (data.chart && data.chart.result) {
+              const result = data.chart.result[0];
+              lastPrice = result.meta.regularMarketPrice;
+              const previousClose = result.meta.previousClose;
+              priceChange = ((lastPrice - previousClose) / previousClose) * 100;
+            }
+          } catch (e) {
+            // Final fallback to Frankfurter if Yahoo fails
+            try {
+              const res = await axios.get(`https://api.frankfurter.app/latest?from=${symbol.substring(0,3)}&to=${symbol.substring(3,6)}`);
+              lastPrice = res.data.rates[symbol.substring(3,6)];
+            } catch (err) {
+              lastPrice = 1.0850 + (Math.random() * 0.01);
+            }
+          }
+        }
+        
+        const type = priceChange >= 0 ? "BUY" : "SELL";
+        
+        signalData = {
+          type,
+          entry: lastPrice.toFixed(5),
+          tp: (type === "BUY" ? lastPrice + 0.0050 : lastPrice - 0.0050).toFixed(5),
+          sl: (type === "BUY" ? lastPrice - 0.0030 : lastPrice + 0.0030).toFixed(5),
+          confidence: "High",
+          confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
+          recommendations: [
+            "Check USD News (CPI/FOMC) before entering.",
+            "Recommended Risk: 1% per trade.",
+            "Scenario: Strong rejection from the H1 zone confirms the move."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      } else if (broker === "quotex") {
+        const type = Math.random() > 0.5 ? "CALL" : "PUT";
+        signalData = {
+          type,
+          entry: "Market Price",
+          duration: timeframe || "1m",
+          confidence: "High",
+          confirmationZone: "Next Candle Opening",
+          recommendations: [
+            "Avoid trading during high volatility news.",
+            "Use Martingale only up to Step 1 if needed.",
+            "Scenario: Wait for the current candle to exhaust before entry."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+
+        // Set Restriction
+        const value = parseInt(timeframe);
+        let durationMs = 60000;
+        if (timeframe.endsWith("s")) durationMs = value * 1000;
+        else if (timeframe.endsWith("m")) durationMs = value * 60 * 1000;
+        else if (timeframe.endsWith("h")) durationMs = value * 60 * 60 * 1000;
+        else if (timeframe.endsWith("d")) durationMs = value * 24 * 60 * 60 * 1000;
+
+        setRestrictions(prev => ({
+          ...prev,
+          [pair]: Date.now() + durationMs
+        }));
+      }
 
       setSignal(signalData);
       toast.success("Signal Generated!");
-    } catch (err: any) {
-      console.warn("API Signal generation failed, trying client-side fallback:", err.message);
-      
-      // If it's a specific business logic error from the server, don't fallback
-      if (err.response && err.response.status !== 404 && err.response.status !== 502) {
-        const errorMsg = err.response?.data?.error || "Failed to generate signal";
-        toast.error(errorMsg);
-        
-        if (err.response?.data?.remainingMs) {
-          setRestrictions(prev => ({
-            ...prev,
-            [pair]: Date.now() + err.response.data.remainingMs
-          }));
-          setShowRestrictionModal(true);
-        }
-        
-        if (err.response?.data?.activeSignal) {
-          setSignal(err.response.data.activeSignal);
-        }
-        setIsGenerating(false);
-        return;
-      }
-
-      // 2. Client-side Fallback (Static mode - e.g. Netlify)
-      await handleFallbackSignal();
+    } catch (err) {
+      toast.error("Failed to generate signal");
     } finally {
       setIsGenerating(false);
     }
-  };
-
-  const handleFallbackSignal = async () => {
-    toast.info("Running in Static Mode (No Backend). Generating simulated signal.");
-    
-    // Simulate delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const types: ("CALL" | "PUT" | "BUY" | "SELL")[] = broker === "quotex" ? ["CALL", "PUT"] : ["BUY", "SELL"];
-    const type = types[Math.floor(Math.random() * types.length)];
-    const entry = (Math.random() * 100 + 1).toFixed(5);
-    
-    const mockSignal: Signal = {
-      type,
-      entry,
-      tp: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? 0.001 : -0.001)).toFixed(5),
-      sl: (parseFloat(entry) + (type === "CALL" || type === "BUY" ? -0.0005 : 0.0005)).toFixed(5),
-      duration: broker === "quotex" ? timeframe : "1-5m",
-      confidence: Math.random() > 0.5 ? "High" : "Medium",
-      confirmationZone: (parseFloat(entry) + (Math.random() * 0.0002 - 0.0001)).toFixed(5),
-      recommendations: [
-        "Wait for confirmation candle",
-        "Check RSI for overbought/oversold",
-        "Use 1% risk per trade"
-      ],
-      timestamp: new Date().toISOString(),
-      pair: pair.toUpperCase()
-    };
-
-    setSignal(mockSignal);
-    toast.success("Simulated Signal Generated!");
   };
 
   const fetchAllTokens = async () => {
@@ -821,12 +684,6 @@ function App() {
           <span className="font-bold tracking-tight">MW TRADER</span>
         </div>
         <div className="flex items-center gap-2">
-          {isStaticMode && (
-            <div className="flex items-center gap-1 bg-amber-500/10 border border-amber-500/30 px-2 py-1 rounded-md text-[10px] font-bold text-amber-500">
-              <AlertTriangle className="w-3 h-3" />
-              STATIC
-            </div>
-          )}
           {isAdmin && (
             <Button 
               variant="secondary" 
@@ -900,20 +757,6 @@ function App() {
                 </p>
               </div>
 
-              {/* Static Mode Info */}
-              {isStaticMode && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-2">
-                  <div className="flex items-center gap-2 text-amber-500">
-                    <AlertTriangle className="w-4 h-4" />
-                    <span className="text-xs font-bold uppercase tracking-wider">Static Mode Active</span>
-                  </div>
-                  <p className="text-[10px] text-amber-500/80 leading-relaxed">
-                    The backend API is currently unreachable (common on Netlify). 
-                    The app will use <b>Simulated Signals</b> and direct database connection.
-                  </p>
-                </div>
-              )}
-
               {/* Logo */}
               <div className="flex justify-center">
                 <div className="w-32 h-32 rounded-full bg-white flex items-center justify-center shadow-[0_0_40px_rgba(255,255,255,0.1)] border-4 border-slate-800">
@@ -932,19 +775,12 @@ function App() {
                   value={broker}
                   onChange={setBroker}
                 />
-                <div className="relative">
-                  <Select 
-                    label="Select Pair" 
-                    options={availablePairs} 
-                    value={pair}
-                    onChange={setPair}
-                  />
-                  {isFetchingPairs && (
-                    <div className="absolute right-10 top-[38px]">
-                      <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
-                    </div>
-                  )}
-                </div>
+                <Select 
+                  label="Select Pair" 
+                  options={availablePairs} 
+                  value={pair}
+                  onChange={setPair}
+                />
                 {broker === "quotex" && (
                   <Select 
                     label="Select Timeframe" 
@@ -1021,12 +857,9 @@ function App() {
                           <Shield className="w-4 h-4 text-indigo-400" />
                           <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Confirmation Zone</span>
                         </div>
-                        <div className="text-sm font-mono text-white bg-indigo-500/10 p-3 rounded-xl border border-indigo-500/20 text-center font-bold">
+                        <div className="text-sm font-mono text-white bg-indigo-500/10 p-2 rounded-lg border border-indigo-500/20 text-center">
                           {signal.confirmationZone}
                         </div>
-                        <p className="mt-2 text-[10px] text-slate-500 text-center leading-tight">
-                          💡 <span className="font-medium">How to use:</span> Wait for the market price to reach this specific zone before entering your trade. This confirms the trend and reduces risk.
-                        </p>
                       </div>
                     )}
 

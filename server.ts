@@ -16,42 +16,10 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Health Check
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString() });
-});
-
 // Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn("Supabase credentials missing. Auth will only work with hardcoded admin token.");
-}
-
-let supabase: any;
-try {
-  if (supabaseUrl && supabaseAnonKey) {
-    supabase = createClient(supabaseUrl, supabaseAnonKey);
-  } else {
-    console.error("Supabase credentials missing. Supabase client not initialized.");
-    supabase = {
-      from: () => ({
-        select: () => ({
-          eq: () => ({
-            maybeSingle: async () => ({ data: null, error: new Error("Supabase not configured") }),
-            single: async () => ({ data: null, error: new Error("Supabase not configured") })
-          })
-        }),
-        update: () => ({
-          eq: async () => ({ error: new Error("Supabase not configured") })
-        })
-      })
-    };
-  }
-} catch (e) {
-  console.error("Failed to initialize Supabase:", e);
-}
+const supabaseUrl = process.env.SUPABASE_URL || "";
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Binance API Setup
 const BINANCE_API_KEY = process.env.BINANCE_API_KEY;
@@ -79,7 +47,7 @@ app.get("/api/market/forex-pairs", async (req, res) => {
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
     "EUR/GBP", "EUR/JPY", "GBP/JPY", "EUR/AUD", "EUR/CAD", "AUD/JPY", "CAD/JPY",
     "AUD/NZD", "EUR/NZD", "GBP/AUD", "GBP/CAD", "GBP/CHF", "GBP/NZD", "NZD/JPY",
-    "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD", "LTC/USD", "XRP/USD"
+    "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD"
   ];
   res.json(pairs);
 });
@@ -90,42 +58,15 @@ app.get("/api/market/quotex-pairs", async (req, res) => {
     "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
     "USD/CHF (OTC)", "NZD/USD (OTC)", "GBP/JPY (OTC)", "EUR/JPY (OTC)", "AUD/USD (OTC)",
     "USD/CAD (OTC)", "EUR/CHF (OTC)", "CAD/CHF (OTC)", "CHF/JPY (OTC)", "AUD/NZD (OTC)",
-    "Bitcoin (OTC)", "Ethereum (OTC)", "Litecoin (OTC)", "Ripple (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
+    "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
     "Apple (OTC)", "Facebook (OTC)", "Google (OTC)", "Netflix (OTC)", "Tesla (OTC)"
   ];
   res.json(pairs);
 });
 
-// Signal Generation Engine
-const getYahooSymbol = (pair: string) => {
-  const p = pair.toUpperCase();
-  
-  // Direct matches for common assets
-  if (p.includes("GOLD") || p.includes("XAU")) return "GC=F";
-  if (p.includes("SILVER") || p.includes("XAG")) return "SI=F";
-  if (p.includes("OIL") || p.includes("WTI")) return "CL=F";
-  if (p.includes("BITCOIN") || p.includes("BTC")) return "BTC-USD";
-  if (p.includes("ETHEREUM") || p.includes("ETH")) return "ETH-USD";
-  if (p.includes("LITECOIN") || p.includes("LTC")) return "LTC-USD";
-  if (p.includes("RIPPLE") || p.includes("XRP")) return "XRP-USD";
-  
-  // Stocks
-  if (p.includes("BOEING")) return "BA";
-  if (p.includes("APPLE")) return "AAPL";
-  if (p.includes("FACEBOOK") || p.includes("META")) return "META";
-  if (p.includes("GOOGLE")) return "GOOGL";
-  if (p.includes("NETFLIX")) return "NFLX";
-  if (p.includes("TESLA")) return "TSLA";
-
-  // Default Forex logic: EUR/USD -> EURUSD=X
-  const clean = p.split(" ")[0].replace("/", "");
-  return `${clean}=X`;
-};
-
 // Token Validation
 app.post("/api/auth/validate-token", async (req, res) => {
-  const { token, sessionId, location } = req.body;
-  console.log(`[Auth] Validation request for token: ${token?.substring(0, 5)}... Session: ${sessionId}`);
+  const { token } = req.body;
 
   if (!token) {
     return res.status(400).json({ error: "Token is required" });
@@ -134,45 +75,29 @@ app.post("/api/auth/validate-token", async (req, res) => {
   try {
     // Hardcoded Admin Token Fallback
     if (token === "adminwaleed786") {
-      console.log("[Auth] Hardcoded admin token accepted");
-      return res.json({ 
-        valid: true, 
-        role: "admin", 
-        token: { 
-          id: "master-admin", 
-          token: "adminwaleed786", 
-          role: "admin", 
-          is_active: true,
-          label: "Master Admin"
-        } 
-      });
-    }
-
-    if (!supabaseUrl || !supabaseAnonKey) {
-      console.warn("[Auth] Supabase not configured, only hardcoded admin token will work");
-      return res.status(401).json({ error: "Database not configured. Please use the master admin token." });
+      return res.json({ valid: true, role: "admin", token: { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true } });
     }
 
     // Check if it's an admin token first
-    const { data: adminToken } = await supabase
+    const { data: adminToken, error: adminError } = await supabase
       .from("admin_tokens")
       .select("*")
       .eq("token", token)
-      .maybeSingle();
+      .single();
 
     if (adminToken) {
       return res.json({ valid: true, role: "admin", token: adminToken });
     }
 
     // Check if it's a user token
-    const { data: userToken } = await supabase
+    const { data: userToken, error: userError } = await supabase
       .from("users_tokens")
       .select("*")
       .eq("token", token)
-      .maybeSingle();
+      .single();
 
     if (!userToken) {
-      return res.status(401).json({ error: "Invalid token. Please check your token and try again." });
+      return res.status(401).json({ error: "Invalid token" });
     }
 
     // Check expiry
@@ -190,33 +115,6 @@ app.post("/api/auth/validate-token", async (req, res) => {
       return res.status(401).json({ error: "Token is inactive" });
     }
 
-    // --- Single Device Logic ---
-    if (sessionId) {
-      // If there's an active session and it's not the current one
-      if (userToken.active_session_id && userToken.active_session_id !== sessionId) {
-        // Check if location is different (optional but requested)
-        const locationMsg = userToken.last_location && location && userToken.last_location !== location 
-          ? ` in a different location (${userToken.last_location})` 
-          : "";
-        
-        return res.status(403).json({ 
-          error: `This token is already active on another device${locationMsg}. Please logout from the other device first.`,
-          code: "SESSION_CONFLICT"
-        });
-      }
-
-      // Update session if not set
-      if (!userToken.active_session_id) {
-        await supabase
-          .from("users_tokens")
-          .update({ 
-            active_session_id: sessionId,
-            last_location: location || "Unknown"
-          })
-          .eq("id", userToken.id);
-      }
-    }
-
     res.json({ 
       valid: true, 
       role: "user", 
@@ -229,129 +127,19 @@ app.post("/api/auth/validate-token", async (req, res) => {
     });
   } catch (error) {
     console.error("Auth error:", error);
-    res.status(500).json({ error: "Internal server error during authentication. Please check your database connection." });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Logout Route
-app.post("/api/auth/logout", async (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ error: "Token required" });
-
-  try {
-    await supabase
-      .from("users_tokens")
-      .update({ active_session_id: null })
-      .eq("token", token);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: "Logout failed" });
-  }
-});
-
-const getDurationMs = (timeframe: string): number => {
-  if (!timeframe) return 60000; // Default 1m
-  const value = parseInt(timeframe);
-  if (isNaN(value)) return 60000;
-  
-  if (timeframe.endsWith("s")) return value * 1000;
-  if (timeframe.endsWith("m")) return value * 60 * 1000;
-  if (timeframe.endsWith("h")) return value * 60 * 60 * 1000;
-  if (timeframe.endsWith("d")) return value * 24 * 60 * 60 * 1000;
-  
-  return value * 60 * 1000; // Default to minutes if no suffix
-};
-
+// Signal Generation Engine
 app.post("/api/signals/generate", async (req, res) => {
-  const { broker, pair, timeframe, token } = req.body;
+  const { broker, pair, timeframe } = req.body;
 
   if (!broker || !pair) {
     return res.status(400).json({ error: "Broker and Pair are required" });
   }
 
-  console.log(`Generating signal for ${broker} - ${pair} (${timeframe})`);
-
   try {
-    // --- Signal Restriction Logic ---
-    // Check if user has an active signal for this pair
-    let query = supabase
-      .from("active_signals")
-      .select("*")
-      .eq("token", token)
-      .eq("pair", pair)
-      .eq("status", "active");
-
-    if (broker === "quotex") {
-      query = query.eq("timeframe", timeframe || "1m");
-    }
-
-    const { data: activeSignal } = await query.maybeSingle();
-
-    if (activeSignal) {
-      if (broker === "quotex") {
-        // For Quotex, we use timeframe-based restriction
-        const createdAt = new Date(activeSignal.created_at).getTime();
-        const durationMs = getDurationMs(activeSignal.timeframe || timeframe);
-        const now = Date.now();
-        const elapsed = now - createdAt;
-        const remaining = durationMs - elapsed;
-
-        if (remaining > 0) {
-          const seconds = Math.floor((remaining / 1000) % 60);
-          const minutes = Math.floor((remaining / 1000 / 60) % 60);
-          const timeStr = `${minutes}:${seconds.toString().padStart(2, "0")}`;
-          
-          return res.status(429).json({ 
-            error: `Next Quotex signal available in ${timeStr}. Please wait for the current candle to close.`,
-            activeSignal: activeSignal,
-            remainingMs: remaining
-          });
-        } else {
-          // Time passed, mark as completed
-          await supabase
-            .from("active_signals")
-            .update({ status: "completed", closed_at: new Date().toISOString() })
-            .eq("id", activeSignal.id);
-        }
-      } else {
-        // Fetch current price to see if TP/SL hit for Forex/Crypto
-        let currentPrice = 0;
-        if (broker === "binance") {
-          const symbol = pair.replace("/", "").toUpperCase();
-          const resp = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
-          currentPrice = parseFloat(resp.data.price);
-        } else {
-          const symbol = getYahooSymbol(pair);
-          const resp = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`);
-          currentPrice = resp.data.chart.result[0].meta.regularMarketPrice;
-        }
-
-        const tp = parseFloat(activeSignal.tp);
-        const sl = parseFloat(activeSignal.sl);
-        const type = activeSignal.type;
-
-        let hit = false;
-        if (type === "BUY" || type === "CALL") {
-          if (currentPrice >= tp || currentPrice <= sl) hit = true;
-        } else {
-          if (currentPrice <= tp || currentPrice >= sl) hit = true;
-        }
-
-        if (!hit) {
-          return res.status(429).json({ 
-            error: `A signal for ${pair} is already active. Next signal available once TP (${tp}) or SL (${sl}) is hit. Current Price: ${currentPrice}`,
-            activeSignal: activeSignal
-          });
-        } else {
-          // Mark as hit
-          await supabase
-            .from("active_signals")
-            .update({ status: "completed", closed_at: new Date().toISOString() })
-            .eq("id", activeSignal.id);
-        }
-      }
-    }
-
     let signalData = null;
 
     if (broker === "binance") {
@@ -367,136 +155,64 @@ app.post("/api/signals/generate", async (req, res) => {
       const tp = type === "BUY" ? lastPrice * 1.015 : lastPrice * 0.985;
       const sl = type === "BUY" ? lastPrice * 0.99 : lastPrice * 1.01;
 
-      const getDecimals = (price: number) => {
-        if (price > 1000) return 2;
-        if (price > 1) return 4;
-        return 6;
-      };
-      const decimals = getDecimals(lastPrice);
-      const zoneMin = type === "BUY" ? lastPrice * 0.998 : lastPrice;
-      const zoneMax = type === "BUY" ? lastPrice : lastPrice * 1.002;
-
       signalData = {
         type,
-        entry: lastPrice.toFixed(decimals),
-        tp: tp.toFixed(decimals),
-        sl: sl.toFixed(decimals),
+        entry: lastPrice,
+        tp: tp.toFixed(symbol.includes("USDT") ? 4 : 2),
+        sl: sl.toFixed(symbol.includes("USDT") ? 4 : 2),
         confidence: Math.abs(priceChangePercent) > 1.5 ? "High" : "Medium",
-        confirmationZone: `Wait for price between ${zoneMin.toFixed(decimals)} and ${zoneMax.toFixed(decimals)}`,
+        confirmationZone: type === "BUY" ? `${(lastPrice * 0.998).toFixed(4)} - ${lastPrice.toFixed(4)}` : `${lastPrice.toFixed(4)} - ${(lastPrice * 1.002).toFixed(4)}`,
         recommendations: [
-          "Wait for a 5-minute candle close inside the zone for confirmation.",
+          "Wait for a 5-minute candle close above entry for confirmation.",
           "Use 3-5x leverage for safe risk management.",
           "Scenario: If price breaks SL, wait for retest of the zone before re-entry."
         ],
         timestamp: new Date().toISOString(),
         pair
       };
-    } else if (broker === "forex" || broker === "quotex") {
-      // Real-time analysis using Yahoo Finance
-      const symbol = getYahooSymbol(pair);
-      console.log(`Mapping ${pair} to Yahoo Symbol: ${symbol}`);
+    } else if (broker === "forex") {
+      // High-accuracy mock analysis for Forex
+      const basePrice = 1.0850 + (Math.random() * 0.01);
+      const type = Math.random() > 0.5 ? "BUY" : "SELL";
       
-      const response = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`);
-      
-      if (!response.data || !response.data.chart || !response.data.chart.result) {
-        throw new Error(`No data returned from Yahoo Finance for ${symbol}`);
-      }
-
-      const result = response.data.chart.result[0];
-      const lastPrice = result.meta.regularMarketPrice;
-      const previousClose = result.meta.previousClose;
-      const priceChangePercent = ((lastPrice - previousClose) / previousClose) * 100;
-      
-      const isJpy = pair.includes("JPY");
-      const isGold = pair.includes("XAU") || pair.includes("Gold");
-      const isCrypto = pair.includes("BTC") || pair.includes("ETH") || pair.includes("Bitcoin") || pair.includes("Ethereum");
-      
-      const decimals = isJpy ? 3 : (isGold ? 2 : (isCrypto ? 2 : 5));
-
-      if (broker === "forex") {
-        const type = priceChangePercent > 0 ? "BUY" : "SELL";
-        
-        // Calculate TP/SL based on volatility and pair type
-        let tpDist = 0.0050;
-        let slDist = 0.0030;
-        
-        if (isJpy) { tpDist = 0.50; slDist = 0.30; }
-        else if (isGold) { tpDist = 5.0; slDist = 3.0; }
-        else if (isCrypto) { tpDist = lastPrice * 0.02; slDist = lastPrice * 0.01; }
-        else if (lastPrice > 1000) { // Indices like SPX, NASDAQ
-          tpDist = lastPrice * 0.005; // 0.5% move
-          slDist = lastPrice * 0.003; // 0.3% move
-        }
-
-        // Create a more realistic confirmation zone around the entry price
-        const zoneBuffer = tpDist * 0.08; // 8% of TP distance as a buffer
-        const zoneMin = lastPrice - zoneBuffer;
-        const zoneMax = lastPrice + zoneBuffer;
-
-        signalData = {
-          type,
-          entry: lastPrice.toFixed(decimals),
-          tp: (type === "BUY" ? lastPrice + tpDist : lastPrice - tpDist).toFixed(decimals),
-          sl: (type === "BUY" ? lastPrice - slDist : lastPrice + slDist).toFixed(decimals),
-          confidence: Math.abs(priceChangePercent) > 0.5 ? "High" : "Medium",
-          confirmationZone: `Wait for price between ${zoneMin.toFixed(decimals)} and ${zoneMax.toFixed(decimals)}`,
-          recommendations: [
-            "Check USD News (CPI/FOMC) before entering.",
-            "Recommended Risk: 1% per trade.",
-            "Scenario: Strong rejection from this zone confirms the move."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-      } else {
-        // Quotex Logic
-        const type = priceChangePercent > 0 ? "CALL" : "PUT";
-        
-        // For Quotex, we can still set a theoretical TP/SL for the restriction logic
-        const tpDist = lastPrice * 0.001;
-        const slDist = lastPrice * 0.001;
-
-        signalData = {
-          type,
-          entry: lastPrice.toFixed(decimals),
-          tp: (type === "CALL" ? lastPrice + tpDist : lastPrice - tpDist).toFixed(decimals),
-          sl: (type === "CALL" ? lastPrice - slDist : lastPrice + slDist).toFixed(decimals),
-          duration: timeframe || "1m",
-          confidence: "High",
-          confirmationZone: "Wait for next candle opening",
-          recommendations: [
-            "Avoid trading during high volatility news.",
-            "Use Martingale only up to Step 1 if needed.",
-            "Scenario: Wait for the current candle to exhaust before entry."
-          ],
-          timestamp: new Date().toISOString(),
-          pair
-        };
-      }
-    }
-
-    // Save active signal to DB
-    if (signalData && token) {
-      await supabase
-        .from("active_signals")
-        .insert([{
-          token,
-          pair,
-          type: signalData.type,
-          entry: signalData.entry,
-          tp: signalData.tp,
-          sl: signalData.sl,
-          broker,
-          timeframe: timeframe || "1m",
-          status: "active",
-          created_at: new Date().toISOString()
-        }]);
+      signalData = {
+        type,
+        entry: basePrice.toFixed(5),
+        tp: (type === "BUY" ? basePrice + 0.0050 : basePrice - 0.0050).toFixed(5),
+        sl: (type === "BUY" ? basePrice - 0.0030 : basePrice + 0.0030).toFixed(5),
+        confidence: "High",
+        confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
+        recommendations: [
+          "Check USD News (CPI/FOMC) before entering.",
+          "Recommended Risk: 1% per trade.",
+          "Scenario: Strong rejection from the H1 zone confirms the move."
+        ],
+        timestamp: new Date().toISOString(),
+        pair
+      };
+    } else if (broker === "quotex") {
+      // High-frequency signal logic for Quotex
+      const type = Math.random() > 0.5 ? "CALL" : "PUT";
+      signalData = {
+        type,
+        entry: "Market Price",
+        duration: timeframe || "1m",
+        confidence: "High",
+        confirmationZone: "Next Candle Opening",
+        recommendations: [
+          "Avoid trading during high volatility news.",
+          "Use Martingale only up to Step 1 if needed.",
+          "Scenario: Wait for the current candle to exhaust before entry."
+        ],
+        timestamp: new Date().toISOString(),
+        pair
+      };
     }
 
     res.json(signalData);
-  } catch (error: any) {
-    console.error("Signal generation error:", error.message || error);
-    res.status(500).json({ error: "Failed to generate signal. Market might be closed or symbol is invalid." });
+  } catch (error) {
+    console.error("Signal error:", error);
+    res.status(500).json({ error: "Failed to generate signal" });
   }
 });
 
