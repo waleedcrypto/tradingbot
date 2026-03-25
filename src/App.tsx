@@ -96,17 +96,54 @@ const Select = ({ label, options, value, onChange }: { label: string; options: s
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full appearance-none bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
+        className="w-full appearance-none bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all cursor-pointer"
       >
         <option value="">Choose {label.toLowerCase()}...</option>
-        {options.map((opt) => (
-          <option key={opt} value={opt.toLowerCase()}>{opt}</option>
+        {Array.isArray(options) && options.map((opt) => (
+          <option key={String(opt)} value={String(opt).toLowerCase()}>{String(opt)}</option>
         ))}
       </select>
       <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
     </div>
   </div>
 );
+
+// --- Error Boundary ---
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("App Crash:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#0f0a1f] text-white flex items-center justify-center p-6 text-center">
+          <div className="max-w-md space-y-4">
+            <AlertTriangle className="w-16 h-16 text-rose-500 mx-auto" />
+            <h1 className="text-2xl font-bold">Something went wrong</h1>
+            <p className="text-slate-400 text-sm">The application crashed due to a runtime error. Please try refreshing the page.</p>
+            <pre className="bg-black/50 p-4 rounded-xl text-left text-[10px] overflow-auto max-h-40 text-rose-300 font-mono">
+              {this.state.error?.message || "Unknown error"}
+            </pre>
+            <Button onClick={() => window.location.reload()} className="w-full">
+              Refresh Page
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode }) => (
   <AnimatePresence>
@@ -140,7 +177,15 @@ const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean; onClose:
 
 // --- Main App ---
 
-export default function App() {
+export default function AppWrapper() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+function App() {
   const [token, setToken] = useState<string>(localStorage.getItem("md_token") || "");
   const [user, setUser] = useState<Token | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -151,6 +196,23 @@ export default function App() {
   const [restrictions, setRestrictions] = useState<Record<string, number>>({});
   const [showRestrictionModal, setShowRestrictionModal] = useState(false);
   const [restrictionRemaining, setRestrictionRemaining] = useState("");
+
+  const [isStaticMode, setIsStaticMode] = useState(true);
+
+  useEffect(() => {
+    // Check if backend is reachable
+    const checkBackend = async () => {
+      try {
+        await axios.get("/api/health", { timeout: 3000 });
+        setIsStaticMode(false);
+        console.log("Backend reachable, Full-stack mode enabled");
+      } catch (e) {
+        console.warn("Backend unreachable, keeping Static Mode enabled");
+        setIsStaticMode(true);
+      }
+    };
+    checkBackend();
+  }, []);
 
   const [sessionId] = useState(() => {
     let id = localStorage.getItem("md_session_id");
@@ -166,6 +228,7 @@ export default function App() {
   const [pair, setPair] = useState("");
   const [timeframe, setTimeframe] = useState("");
   const [availablePairs, setAvailablePairs] = useState<string[]>([]);
+  const [isFetchingPairs, setIsFetchingPairs] = useState(false);
   const [signal, setSignal] = useState<Signal | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [countdown, setCountdown] = useState<string>("");
@@ -217,6 +280,29 @@ export default function App() {
   }, [restrictions, pair]);
 
   const fetchPairs = async () => {
+    setIsFetchingPairs(true);
+    setAvailablePairs([]); // Clear previous pairs
+
+    // Immediate fallback if we are in static mode
+    if (isStaticMode) {
+      console.log("Static mode active, using immediate fallback for pairs");
+      if (broker === "binance") {
+        setAvailablePairs(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT"]);
+      } else if (broker === "forex") {
+        setAvailablePairs([
+          "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
+          "EUR/GBP", "EUR/JPY", "GBP/JPY", "XAU/USD (Gold)", "BTC/USD"
+        ]);
+      } else if (broker === "quotex") {
+        setAvailablePairs([
+          "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
+          "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Apple (OTC)", "Tesla (OTC)"
+        ]);
+      }
+      setIsFetchingPairs(false);
+      return;
+    }
+
     try {
       let endpoint = "";
       if (broker === "binance") endpoint = "/api/market/binance-pairs";
@@ -224,11 +310,37 @@ export default function App() {
       else if (broker === "quotex") endpoint = "/api/market/quotex-pairs";
 
       if (endpoint) {
-        const response = await axios.get(endpoint);
-        setAvailablePairs(response.data);
+        try {
+          // Add a timeout to prevent hanging on static hosts
+          const response = await axios.get(endpoint, { timeout: 3000 });
+          if (Array.isArray(response.data)) {
+            setAvailablePairs(response.data);
+          } else {
+            throw new Error("Invalid response format");
+          }
+        } catch (apiErr) {
+          console.warn("API fetchPairs failed or timed out, using client-side fallback");
+          // Fallback for static hosting (Netlify)
+          if (broker === "binance") {
+            setAvailablePairs(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT"]);
+          } else if (broker === "forex") {
+            setAvailablePairs([
+              "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
+              "EUR/GBP", "EUR/JPY", "GBP/JPY", "XAU/USD (Gold)", "BTC/USD"
+            ]);
+          } else if (broker === "quotex") {
+            setAvailablePairs([
+              "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
+              "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Apple (OTC)", "Tesla (OTC)"
+            ]);
+          }
+        }
       }
     } catch (err) {
+      console.error("fetchPairs error:", err);
       toast.error("Failed to fetch market pairs");
+    } finally {
+      setIsFetchingPairs(false);
     }
   };
 
@@ -670,6 +782,12 @@ export default function App() {
           <span className="font-bold tracking-tight">MW TRADER</span>
         </div>
         <div className="flex items-center gap-2">
+          {isStaticMode && (
+            <div className="flex items-center gap-1 bg-amber-500/10 border border-amber-500/30 px-2 py-1 rounded-md text-[10px] font-bold text-amber-500">
+              <AlertTriangle className="w-3 h-3" />
+              STATIC
+            </div>
+          )}
           {isAdmin && (
             <Button 
               variant="secondary" 
@@ -761,12 +879,19 @@ export default function App() {
                   value={broker}
                   onChange={setBroker}
                 />
-                <Select 
-                  label="Select Pair" 
-                  options={availablePairs} 
-                  value={pair}
-                  onChange={setPair}
-                />
+                <div className="relative">
+                  <Select 
+                    label="Select Pair" 
+                    options={availablePairs} 
+                    value={pair}
+                    onChange={setPair}
+                  />
+                  {isFetchingPairs && (
+                    <div className="absolute right-10 top-[38px]">
+                      <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
+                    </div>
+                  )}
+                </div>
                 {broker === "quotex" && (
                   <Select 
                     label="Select Timeframe" 
