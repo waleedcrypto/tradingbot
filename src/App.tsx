@@ -148,6 +148,9 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState<"dashboard" | "admin">("dashboard");
   const [isExpiredModalOpen, setIsExpiredModalOpen] = useState(false);
+  const [restrictions, setRestrictions] = useState<Record<string, number>>({});
+  const [showRestrictionModal, setShowRestrictionModal] = useState(false);
+  const [restrictionRemaining, setRestrictionRemaining] = useState("");
 
   // Dashboard State
   const [broker, setBroker] = useState("");
@@ -159,8 +162,10 @@ export default function App() {
   const [countdown, setCountdown] = useState<string>("");
 
   useEffect(() => {
-    if (token) {
-      handleLogin(token);
+    const savedToken = localStorage.getItem("md_token");
+    if (savedToken) {
+      setToken(savedToken);
+      handleLogin(savedToken);
     }
   }, []);
 
@@ -180,6 +185,27 @@ export default function App() {
       setTimeframe("");
     }
   }, [broker]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (restrictions[pair]) {
+        const diff = restrictions[pair] - Date.now();
+        if (diff > 0) {
+          const seconds = Math.floor((diff / 1000) % 60);
+          const minutes = Math.floor((diff / 1000 / 60) % 60);
+          setRestrictionRemaining(`${minutes}:${seconds.toString().padStart(2, "0")}`);
+        } else {
+          setRestrictionRemaining("");
+          const newRestrictions = { ...restrictions };
+          delete newRestrictions[pair];
+          setRestrictions(newRestrictions);
+        }
+      } else {
+        setRestrictionRemaining("");
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [restrictions, pair]);
 
   const fetchPairs = async () => {
     try {
@@ -218,18 +244,13 @@ export default function App() {
   const [newTokenForm, setNewTokenForm] = useState({ label: "", days: "30" });
   const [editTokenForm, setEditTokenForm] = useState({ label: "", days_remaining: "30", is_active: true });
 
-  useEffect(() => {
-    if (token) {
-      handleLogin(token);
-    }
-  }, []);
-
   const handleLogin = async (tokenToUse: string) => {
+    if (!tokenToUse) return;
     setIsLoading(true);
     try {
       // Hardcoded Admin Token Fallback
       if (tokenToUse === "adminwaleed786") {
-        const adminData = { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true };
+        const adminData = { id: "master-admin", token: "adminwaleed786", role: "admin", is_active: true, created_at: new Date().toISOString(), expiry_date: new Date(Date.now() + 365 * 86400000).toISOString() };
         setUser(adminData as any);
         setIsAuth(true);
         setIsAdmin(true);
@@ -240,6 +261,12 @@ export default function App() {
       }
 
       // Check Supabase for user tokens
+      if (!supabase) {
+        toast.error("Database connection not configured. Please check environment variables.");
+        setIsLoading(false);
+        return;
+      }
+
       const { data: userToken, error: userError } = await supabase
         .from("users_tokens")
         .select("*")
@@ -302,6 +329,13 @@ export default function App() {
       toast.error("Please select timeframe for Quotex");
       return;
     }
+
+    // Check Restrictions
+    if (restrictions[pair] && Date.now() < restrictions[pair]) {
+      setShowRestrictionModal(true);
+      return;
+    }
+
     setIsGenerating(true);
     setSignal(null);
     try {
@@ -335,14 +369,52 @@ export default function App() {
           pair
         };
       } else if (broker === "forex") {
-        const basePrice = 1.0850 + (Math.random() * 0.01);
-        const type = Math.random() > 0.5 ? "BUY" : "SELL";
+        const symbol = pair.split(" ")[0].replace("/", "");
+        const apiKey = import.meta.env.VITE_TWELVE_DATA_API_KEY;
+        
+        let lastPrice = 0;
+        let priceChange = 0;
+
+        if (apiKey) {
+          const response = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${apiKey}`);
+          if (response.data && response.data.close) {
+            lastPrice = parseFloat(response.data.close);
+            priceChange = parseFloat(response.data.percent_change || "0");
+          }
+        }
+
+        // Fallback to realistic mock if API fails or no key, but warn user
+        if (!lastPrice) {
+          try {
+            const base = symbol.substring(0, 3);
+            const quote = symbol.substring(3, 6);
+            const yahooSymbol = `${base}${quote}=X`;
+            const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`)}`);
+            const data = JSON.parse(res.data.contents);
+            if (data.chart && data.chart.result) {
+              const result = data.chart.result[0];
+              lastPrice = result.meta.regularMarketPrice;
+              const previousClose = result.meta.previousClose;
+              priceChange = ((lastPrice - previousClose) / previousClose) * 100;
+            }
+          } catch (e) {
+            // Final fallback to Frankfurter if Yahoo fails
+            try {
+              const res = await axios.get(`https://api.frankfurter.app/latest?from=${symbol.substring(0,3)}&to=${symbol.substring(3,6)}`);
+              lastPrice = res.data.rates[symbol.substring(3,6)];
+            } catch (err) {
+              lastPrice = 1.0850 + (Math.random() * 0.01);
+            }
+          }
+        }
+        
+        const type = priceChange >= 0 ? "BUY" : "SELL";
         
         signalData = {
           type,
-          entry: basePrice.toFixed(5),
-          tp: (type === "BUY" ? basePrice + 0.0050 : basePrice - 0.0050).toFixed(5),
-          sl: (type === "BUY" ? basePrice - 0.0030 : basePrice + 0.0030).toFixed(5),
+          entry: lastPrice.toFixed(5),
+          tp: (type === "BUY" ? lastPrice + 0.0050 : lastPrice - 0.0050).toFixed(5),
+          sl: (type === "BUY" ? lastPrice - 0.0030 : lastPrice + 0.0030).toFixed(5),
           confidence: "High",
           confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
           recommendations: [
@@ -369,6 +441,19 @@ export default function App() {
           timestamp: new Date().toISOString(),
           pair
         };
+
+        // Set Restriction
+        const value = parseInt(timeframe);
+        let durationMs = 60000;
+        if (timeframe.endsWith("s")) durationMs = value * 1000;
+        else if (timeframe.endsWith("m")) durationMs = value * 60 * 1000;
+        else if (timeframe.endsWith("h")) durationMs = value * 60 * 60 * 1000;
+        else if (timeframe.endsWith("d")) durationMs = value * 24 * 60 * 60 * 1000;
+
+        setRestrictions(prev => ({
+          ...prev,
+          [pair]: Date.now() + durationMs
+        }));
       }
 
       setSignal(signalData);
@@ -381,6 +466,10 @@ export default function App() {
   };
 
   const fetchAllTokens = async () => {
+    if (!supabase) {
+      toast.error("Database connection not configured.");
+      return;
+    }
     try {
       const { data, error } = await supabase.from("users_tokens").select("*");
       if (error) throw error;
@@ -391,6 +480,10 @@ export default function App() {
   };
 
   const generateNewToken = async () => {
+    if (!supabase) {
+      toast.error("Database connection not configured.");
+      return;
+    }
     try {
       const token = newTokenForm.label.trim() || ("MW-" + Math.random().toString(36).substring(2, 10).toUpperCase());
       
@@ -438,7 +531,7 @@ export default function App() {
   };
 
   const updateToken = async () => {
-    if (!editingToken) return;
+    if (!editingToken || !supabase) return;
     try {
       const updateData: any = {};
       if (editTokenForm.label !== undefined) updateData.label = editTokenForm.label;
@@ -466,6 +559,7 @@ export default function App() {
   };
 
   const deleteToken = async (id: string) => {
+    if (!supabase) return;
     try {
       const { error } = await supabase
         .from("users_tokens")
@@ -482,6 +576,7 @@ export default function App() {
   };
 
   const renewToken = async (id: string) => {
+    if (!supabase) return;
     try {
       const expiryDate = new Date();
       expiryDate.setDate(expiryDate.getDate() + 30);
@@ -689,7 +784,7 @@ export default function App() {
                 {broker === "quotex" && (
                   <Select 
                     label="Select Timeframe" 
-                    options={["1m", "2m", "5m", "15m", "30m"]} 
+                    options={["5s", "10s", "15s", "30s", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d"]} 
                     value={timeframe}
                     onChange={setTimeframe}
                   />
@@ -991,6 +1086,47 @@ export default function App() {
 
           <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
             MW TRADER • Signal Engine
+          </p>
+        </div>
+      </Modal>
+
+      {/* Restriction Modal */}
+      <Modal 
+        isOpen={showRestrictionModal} 
+        onClose={() => setShowRestrictionModal(false)} 
+        title="Signal Restricted"
+      >
+        <div className="text-center space-y-6 py-4">
+          <div className="w-20 h-20 rounded-full bg-amber-500/10 flex items-center justify-center mx-auto border-2 border-amber-500/20">
+            <Clock className="w-10 h-10 text-amber-500" />
+          </div>
+          
+          <div className="space-y-2">
+            <h4 className="text-lg font-bold text-white">Wait for Duration</h4>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              You have already generated a signal for <span className="font-bold text-white">{pair.toUpperCase()}</span>. 
+              Please wait for the previous trade duration to complete before generating a new one for this pair.
+            </p>
+          </div>
+
+          <div className="bg-slate-950/50 p-6 rounded-3xl border border-slate-800 shadow-inner">
+            <div className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-2">Remaining Time</div>
+            <div className="text-4xl font-mono font-bold text-amber-500 tabular-nums">
+              {restrictionRemaining || "0:00"}
+            </div>
+          </div>
+
+          <div className="pt-4">
+            <Button 
+              className="w-full bg-amber-600 hover:bg-amber-700 text-white"
+              onClick={() => setShowRestrictionModal(false)}
+            >
+              Understood
+            </Button>
+          </div>
+
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
+            MW TRADER • Security System
           </p>
         </div>
       </Modal>
