@@ -47,7 +47,7 @@ app.get("/api/market/forex-pairs", async (req, res) => {
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
     "EUR/GBP", "EUR/JPY", "GBP/JPY", "EUR/AUD", "EUR/CAD", "AUD/JPY", "CAD/JPY",
     "AUD/NZD", "EUR/NZD", "GBP/AUD", "GBP/CAD", "GBP/CHF", "GBP/NZD", "NZD/JPY",
-    "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD"
+    "XAU/USD (Gold)", "XAG/USD (Silver)", "WTI/USD (Oil)", "BTC/USD", "ETH/USD", "LTC/USD", "XRP/USD"
   ];
   res.json(pairs);
 });
@@ -58,7 +58,7 @@ app.get("/api/market/quotex-pairs", async (req, res) => {
     "EUR/USD (OTC)", "GBP/USD (OTC)", "USD/JPY (OTC)", "AUD/CAD (OTC)", "EUR/GBP (OTC)",
     "USD/CHF (OTC)", "NZD/USD (OTC)", "GBP/JPY (OTC)", "EUR/JPY (OTC)", "AUD/USD (OTC)",
     "USD/CAD (OTC)", "EUR/CHF (OTC)", "CAD/CHF (OTC)", "CHF/JPY (OTC)", "AUD/NZD (OTC)",
-    "Bitcoin (OTC)", "Ethereum (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
+    "Bitcoin (OTC)", "Ethereum (OTC)", "Litecoin (OTC)", "Ripple (OTC)", "Gold (OTC)", "Silver (OTC)", "Boeing (OTC)",
     "Apple (OTC)", "Facebook (OTC)", "Google (OTC)", "Netflix (OTC)", "Tesla (OTC)"
   ];
   res.json(pairs);
@@ -132,12 +132,39 @@ app.post("/api/auth/validate-token", async (req, res) => {
 });
 
 // Signal Generation Engine
+const getYahooSymbol = (pair: string) => {
+  const p = pair.toUpperCase();
+  
+  // Direct matches for common assets
+  if (p.includes("GOLD") || p.includes("XAU")) return "GC=F";
+  if (p.includes("SILVER") || p.includes("XAG")) return "SI=F";
+  if (p.includes("OIL") || p.includes("WTI")) return "CL=F";
+  if (p.includes("BITCOIN") || p.includes("BTC")) return "BTC-USD";
+  if (p.includes("ETHEREUM") || p.includes("ETH")) return "ETH-USD";
+  if (p.includes("LITECOIN") || p.includes("LTC")) return "LTC-USD";
+  if (p.includes("RIPPLE") || p.includes("XRP")) return "XRP-USD";
+  
+  // Stocks
+  if (p.includes("BOEING")) return "BA";
+  if (p.includes("APPLE")) return "AAPL";
+  if (p.includes("FACEBOOK") || p.includes("META")) return "META";
+  if (p.includes("GOOGLE")) return "GOOGL";
+  if (p.includes("NETFLIX")) return "NFLX";
+  if (p.includes("TESLA")) return "TSLA";
+
+  // Default Forex logic: EUR/USD -> EURUSD=X
+  const clean = p.split(" ")[0].replace("/", "");
+  return `${clean}=X`;
+};
+
 app.post("/api/signals/generate", async (req, res) => {
   const { broker, pair, timeframe } = req.body;
 
   if (!broker || !pair) {
     return res.status(400).json({ error: "Broker and Pair are required" });
   }
+
+  console.log(`Generating signal for ${broker} - ${pair} (${timeframe})`);
 
   try {
     let signalData = null;
@@ -155,64 +182,105 @@ app.post("/api/signals/generate", async (req, res) => {
       const tp = type === "BUY" ? lastPrice * 1.015 : lastPrice * 0.985;
       const sl = type === "BUY" ? lastPrice * 0.99 : lastPrice * 1.01;
 
+      const getDecimals = (price: number) => {
+        if (price > 1000) return 2;
+        if (price > 1) return 4;
+        return 6;
+      };
+      const decimals = getDecimals(lastPrice);
+      const zoneMin = type === "BUY" ? lastPrice * 0.998 : lastPrice;
+      const zoneMax = type === "BUY" ? lastPrice : lastPrice * 1.002;
+
       signalData = {
         type,
-        entry: lastPrice,
-        tp: tp.toFixed(symbol.includes("USDT") ? 4 : 2),
-        sl: sl.toFixed(symbol.includes("USDT") ? 4 : 2),
+        entry: lastPrice.toFixed(decimals),
+        tp: tp.toFixed(decimals),
+        sl: sl.toFixed(decimals),
         confidence: Math.abs(priceChangePercent) > 1.5 ? "High" : "Medium",
-        confirmationZone: type === "BUY" ? `${(lastPrice * 0.998).toFixed(4)} - ${lastPrice.toFixed(4)}` : `${lastPrice.toFixed(4)} - ${(lastPrice * 1.002).toFixed(4)}`,
+        confirmationZone: `Wait for price between ${zoneMin.toFixed(decimals)} and ${zoneMax.toFixed(decimals)}`,
         recommendations: [
-          "Wait for a 5-minute candle close above entry for confirmation.",
+          "Wait for a 5-minute candle close inside the zone for confirmation.",
           "Use 3-5x leverage for safe risk management.",
           "Scenario: If price breaks SL, wait for retest of the zone before re-entry."
         ],
         timestamp: new Date().toISOString(),
         pair
       };
-    } else if (broker === "forex") {
-      // High-accuracy mock analysis for Forex
-      const basePrice = 1.0850 + (Math.random() * 0.01);
-      const type = Math.random() > 0.5 ? "BUY" : "SELL";
+    } else if (broker === "forex" || broker === "quotex") {
+      // Real-time analysis using Yahoo Finance
+      const symbol = getYahooSymbol(pair);
+      console.log(`Mapping ${pair} to Yahoo Symbol: ${symbol}`);
       
-      signalData = {
-        type,
-        entry: basePrice.toFixed(5),
-        tp: (type === "BUY" ? basePrice + 0.0050 : basePrice - 0.0050).toFixed(5),
-        sl: (type === "BUY" ? basePrice - 0.0030 : basePrice + 0.0030).toFixed(5),
-        confidence: "High",
-        confirmationZone: type === "BUY" ? "Demand Zone (H1 Support)" : "Supply Zone (H1 Resistance)",
-        recommendations: [
-          "Check USD News (CPI/FOMC) before entering.",
-          "Recommended Risk: 1% per trade.",
-          "Scenario: Strong rejection from the H1 zone confirms the move."
-        ],
-        timestamp: new Date().toISOString(),
-        pair
-      };
-    } else if (broker === "quotex") {
-      // High-frequency signal logic for Quotex
-      const type = Math.random() > 0.5 ? "CALL" : "PUT";
-      signalData = {
-        type,
-        entry: "Market Price",
-        duration: timeframe || "1m",
-        confidence: "High",
-        confirmationZone: "Next Candle Opening",
-        recommendations: [
-          "Avoid trading during high volatility news.",
-          "Use Martingale only up to Step 1 if needed.",
-          "Scenario: Wait for the current candle to exhaust before entry."
-        ],
-        timestamp: new Date().toISOString(),
-        pair
-      };
+      const response = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`);
+      
+      if (!response.data || !response.data.chart || !response.data.chart.result) {
+        throw new Error(`No data returned from Yahoo Finance for ${symbol}`);
+      }
+
+      const result = response.data.chart.result[0];
+      const lastPrice = result.meta.regularMarketPrice;
+      const previousClose = result.meta.previousClose;
+      const priceChangePercent = ((lastPrice - previousClose) / previousClose) * 100;
+      
+      const isJpy = pair.includes("JPY");
+      const isGold = pair.includes("XAU") || pair.includes("Gold");
+      const isCrypto = pair.includes("BTC") || pair.includes("ETH") || pair.includes("Bitcoin") || pair.includes("Ethereum");
+      
+      const decimals = isJpy ? 3 : (isGold ? 2 : (isCrypto ? 2 : 5));
+
+      if (broker === "forex") {
+        const type = priceChangePercent > 0 ? "BUY" : "SELL";
+        
+        // Calculate TP/SL based on volatility and pair type
+        let tpDist = 0.0050;
+        let slDist = 0.0030;
+        
+        if (isJpy) { tpDist = 0.50; slDist = 0.30; }
+        if (isGold) { tpDist = 5.0; slDist = 3.0; }
+        if (isCrypto) { tpDist = lastPrice * 0.02; slDist = lastPrice * 0.01; }
+
+        const zoneMin = type === "BUY" ? lastPrice - (tpDist * 0.1) : lastPrice;
+        const zoneMax = type === "BUY" ? lastPrice : lastPrice + (tpDist * 0.1);
+
+        signalData = {
+          type,
+          entry: lastPrice.toFixed(decimals),
+          tp: (type === "BUY" ? lastPrice + tpDist : lastPrice - tpDist).toFixed(decimals),
+          sl: (type === "BUY" ? lastPrice - slDist : lastPrice + slDist).toFixed(decimals),
+          confidence: Math.abs(priceChangePercent) > 0.5 ? "High" : "Medium",
+          confirmationZone: `Entry Zone: ${zoneMin.toFixed(decimals)} - ${zoneMax.toFixed(decimals)}`,
+          recommendations: [
+            "Check USD News (CPI/FOMC) before entering.",
+            "Recommended Risk: 1% per trade.",
+            "Scenario: Strong rejection from this zone confirms the move."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      } else {
+        // Quotex Logic
+        const type = priceChangePercent > 0 ? "CALL" : "PUT";
+        signalData = {
+          type,
+          entry: lastPrice.toFixed(decimals),
+          duration: timeframe || "1m",
+          confidence: "High",
+          confirmationZone: "Wait for next candle opening",
+          recommendations: [
+            "Avoid trading during high volatility news.",
+            "Use Martingale only up to Step 1 if needed.",
+            "Scenario: Wait for the current candle to exhaust before entry."
+          ],
+          timestamp: new Date().toISOString(),
+          pair
+        };
+      }
     }
 
     res.json(signalData);
-  } catch (error) {
-    console.error("Signal error:", error);
-    res.status(500).json({ error: "Failed to generate signal" });
+  } catch (error: any) {
+    console.error("Signal generation error:", error.message || error);
+    res.status(500).json({ error: "Failed to generate signal. Market might be closed or symbol is invalid." });
   }
 });
 
